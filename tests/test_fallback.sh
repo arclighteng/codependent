@@ -61,3 +61,28 @@ test_fallback_skips_tier_with_missing_env() {
     assert_contains "$output" "FAKE_MISSING_VAR"
     teardown_fallback_env
 }
+
+test_full_status_command() {
+    source "$PROJECT_ROOT/lib.sh"
+    local output
+    output=$(bash "$PROJECT_ROOT/fallback.sh" status 2>&1)
+    assert_contains "$output" "codependent"
+    assert_contains "$output" "Tier 0"
+    assert_contains "$output" "Monitor:"
+}
+
+test_full_dry_run_command() {
+    source "$PROJECT_ROOT/lib.sh"
+    local output
+    output=$(bash "$PROJECT_ROOT/fallback.sh" --dry-run 2>&1)
+    assert_contains "$output" "dry run"
+    assert_contains "$output" "Tier 0"
+}
+
+test_full_test_command() {
+    source "$PROJECT_ROOT/lib.sh"
+    local output
+    output=$(bash "$PROJECT_ROOT/fallback.sh" --test 2>&1)
+    assert_contains "$output" "system test"
+    assert_contains "$output" "Config:"
+}
