@@ -130,8 +130,7 @@ test_parse_notify_channels_comma_list() {
 test_parse_notify_channels_both_backcompat() {
     local out
     out=$(parse_notify_channels "both")
-    assert_contains "$out" "terminal"
-    assert_contains "$out" "toast"
+    assert_eq "$(printf 'terminal\ntoast')" "$out" "both expands to terminal then toast in order"
 }
 
 test_parse_notify_channels_trims_whitespace() {
@@ -144,4 +143,12 @@ test_parse_notify_channels_empty() {
     local out
     out=$(parse_notify_channels "")
     assert_eq "" "$out" "empty input returns empty"
+}
+
+test_parse_notify_channels_no_glob_expansion() {
+    # Regression: unquoted word-splitting would expand * against the cwd.
+    # Verify that a literal '*' token survives untouched.
+    local out
+    out=$(parse_notify_channels "terminal,*,toast")
+    assert_eq "$(printf 'terminal\n*\ntoast')" "$out" "glob metachars should not expand"
 }

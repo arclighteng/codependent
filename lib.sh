@@ -428,8 +428,11 @@ parse_notify_channels() {
     [[ -z "$raw" ]] && return 0
 
     local IFS=','
+    local -a parts
+    read -ra parts <<< "$raw"
+
     local ch trimmed
-    for ch in $raw; do
+    for ch in "${parts[@]}"; do
         # Trim leading/trailing whitespace
         trimmed="${ch#"${ch%%[![:space:]]*}"}"
         trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
