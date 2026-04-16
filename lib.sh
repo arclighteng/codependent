@@ -420,6 +420,60 @@ notify_terminal() {
     printf '\a' 2>/dev/null || true
 }
 
+# notify_slack URL LEVEL MESSAGE
+# Posts `{"text":"codependent [<level>]: <message>"}` to a Slack incoming webhook.
+# Failures are logged and swallowed — never fatal.
+notify_slack() {
+    local url="$1"
+    local level="$2"
+    local message="$3"
+
+    if [[ -z "$url" ]]; then
+        echo "notify_slack: url is empty — skipping" >&2
+        return 0
+    fi
+
+    # Escape double quotes in message for JSON
+    local esc="${message//\\/\\\\}"
+    esc="${esc//\"/\\\"}"
+    local payload
+    payload=$(printf '{"text":"codependent [%s]: %s"}' "$level" "$esc")
+
+    if ! curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
+            -d "$payload" "$url" >/dev/null 2>&1; then
+        echo "notify_slack: POST failed (non-fatal)" >&2
+    fi
+    return 0
+}
+
+# notify_webhook URL LEVEL EVENT MESSAGE
+# Posts a structured JSON payload to a generic webhook. Non-fatal.
+notify_webhook() {
+    local url="$1"
+    local level="$2"
+    local event="$3"
+    local message="$4"
+
+    if [[ -z "$url" ]]; then
+        echo "notify_webhook: url is empty — skipping" >&2
+        return 0
+    fi
+
+    local ts
+    ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    local esc="${message//\\/\\\\}"
+    esc="${esc//\"/\\\"}"
+    local payload
+    payload=$(printf '{"timestamp":"%s","level":"%s","event":"%s","message":"%s"}' \
+        "$ts" "$level" "$event" "$esc")
+
+    if ! curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
+            -d "$payload" "$url" >/dev/null 2>&1; then
+        echo "notify_webhook: POST failed (non-fatal)" >&2
+    fi
+    return 0
+}
+
 # parse_notify_channels "comma,separated,list"
 # Emits newline-delimited, trimmed channel names.
 # Back-compat: "both" expands to "terminal\ntoast".

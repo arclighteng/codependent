@@ -152,3 +152,69 @@ test_parse_notify_channels_no_glob_expansion() {
     out=$(parse_notify_channels "terminal,*,toast")
     assert_eq "$(printf 'terminal\n*\ntoast')" "$out" "glob metachars should not expand"
 }
+
+# Helper: mock curl to capture invocations
+_mock_curl_setup() {
+    export _CURL_LOG
+    _CURL_LOG=$(mktemp)
+    curl() {
+        local args=("$@")
+        printf '%s\n' "${args[@]}" > "$_CURL_LOG"
+        # Read --data payload (the arg after -d)
+        local i
+        for ((i = 0; i < ${#args[@]}; i++)); do
+            if [[ "${args[$i]}" == "-d" || "${args[$i]}" == "--data" ]]; then
+                echo "${args[$((i + 1))]}" > "${_CURL_LOG}.payload"
+            fi
+        done
+        return 0
+    }
+    export -f curl
+}
+
+_mock_curl_teardown() {
+    unset -f curl 2>/dev/null || true
+    rm -f "$_CURL_LOG" "${_CURL_LOG}.payload"
+    unset _CURL_LOG
+}
+
+test_notify_slack_posts_payload() {
+    _mock_curl_setup
+    notify_slack "https://hooks.slack.com/services/XXX" "critical" "API down"
+    local payload
+    payload=$(cat "${_CURL_LOG}.payload" 2>/dev/null || echo "")
+    assert_contains "$payload" "codependent"
+    assert_contains "$payload" "critical"
+    assert_contains "$payload" "API down"
+    _mock_curl_teardown
+}
+
+test_notify_slack_missing_url_warns() {
+    _mock_curl_setup
+    local out
+    out=$(notify_slack "" "info" "hello" 2>&1)
+    assert_contains "$out" "empty"
+    _mock_curl_teardown
+}
+
+test_notify_webhook_posts_json() {
+    _mock_curl_setup
+    notify_webhook "https://example.com/hook" "warning" "api_degraded" "hello"
+    local payload
+    payload=$(cat "${_CURL_LOG}.payload" 2>/dev/null || echo "")
+    assert_contains "$payload" '"level":"warning"'
+    assert_contains "$payload" '"event":"api_degraded"'
+    assert_contains "$payload" '"message":"hello"'
+    assert_contains "$payload" '"timestamp":'
+    _mock_curl_teardown
+}
+
+test_notify_webhook_curl_fail_nonfatal() {
+    _mock_curl_setup
+    curl() { return 7; }
+    export -f curl
+    local rc=0
+    notify_webhook "https://bad.example" "info" "x" "y" 2>/dev/null || rc=$?
+    assert_eq "0" "$rc" "webhook failures must never crash caller"
+    _mock_curl_teardown
+}
