@@ -78,8 +78,6 @@
 ```
 state/*
 !state/.gitkeep
-*.log
-*.tmp
 ```
 
 - [ ] **Step 2: Create state directory with .gitkeep**
@@ -518,8 +516,8 @@ validate_config() {
     # Validate numeric fields
     for field in check_interval recovery_successes recovery_window failure_window \
                  degraded_threshold heartbeat_timeout max_log_size; do
-        local val="${!CFG_field:-}"
-        eval "val=\${CFG_${field}:-}"
+        local varname="CFG_${field}"
+        local val="${!varname:-}"
         if [[ -n "$val" && ! "$val" =~ ^[0-9]+$ ]]; then
             errors+=("${field}='${val}' — must be a positive integer")
         fi
@@ -639,13 +637,11 @@ Add to `lib.sh`:
 
 parse_tier_line() {
     local line="$1"
-    IFS=' | ' read -ra parts <<< "$(echo "$line" | sed 's/ | /|/g')"
-    # Actually, split on " | " properly
-    TIER_id="$(echo "$line" | awk -F' \\| ' '{print $1}' | xargs)"
-    TIER_tool="$(echo "$line" | awk -F' \\| ' '{print $2}' | xargs)"
-    TIER_command="$(echo "$line" | awk -F' \\| ' '{print $3}' | xargs)"
-    TIER_required_env="$(echo "$line" | awk -F' \\| ' '{print $4}' | xargs)"
-    TIER_check_cmd="$(echo "$line" | awk -F' \\| ' '{print $5}' | xargs)"
+    TIER_id="$(echo "$line" | awk -F' [|] ' '{print $1}' | xargs)"
+    TIER_tool="$(echo "$line" | awk -F' [|] ' '{print $2}' | xargs)"
+    TIER_command="$(echo "$line" | awk -F' [|] ' '{print $3}' | xargs)"
+    TIER_required_env="$(echo "$line" | awk -F' [|] ' '{print $4}' | xargs)"
+    TIER_check_cmd="$(echo "$line" | awk -F' [|] ' '{print $5}' | xargs)"
 }
 
 load_tiers() {
@@ -797,6 +793,25 @@ Add to `lib.sh`:
 - `sliding_window_check_failure()` — checks last N entries are all 0
 
 ```bash
+# --- Cross-Platform Helpers ---
+
+date_to_epoch() {
+    local timestamp="$1"
+    # Try GNU date first (Linux, Git Bash)
+    date -d "$timestamp" +%s 2>/dev/null && return
+    # Try BSD date (macOS)
+    date -j -f "%Y-%m-%dT%H:%M:%S" "$timestamp" +%s 2>/dev/null && return
+    # Fallback: extract components and use printf
+    echo 0
+}
+
+# --- Monitor Lifecycle ---
+# Stub — replaced with full implementation in Task 10.
+# Defined here so fallback.sh (Task 8) can call it without error.
+
+start_monitor() { :; }
+stop_monitor() { :; }
+
 # --- State Management ---
 
 write_state() {
@@ -927,7 +942,7 @@ test_check_network_success() {
     source "$PROJECT_ROOT/lib.sh"
     # Mock curl to succeed
     curl() { return 0; }
-    export -f curl
+    # curl function shadows the real binary in this sourced context
     CFG_network_check_url="https://1.1.1.1"
     local result
     result=$(check_network)
@@ -938,7 +953,7 @@ test_check_network_success() {
 test_check_network_failure() {
     source "$PROJECT_ROOT/lib.sh"
     curl() { return 1; }
-    export -f curl
+    # curl function shadows the real binary in this sourced context
     CFG_network_check_url="https://1.1.1.1"
     if check_network 2>/dev/null; then
         assert_true "false" "should fail when curl fails"
@@ -951,7 +966,7 @@ test_check_network_failure() {
 test_check_status_page_operational() {
     source "$PROJECT_ROOT/lib.sh"
     curl() { echo '{"status":{"indicator":"none","description":"All Systems Operational"}}'; }
-    export -f curl
+    # curl function shadows the real binary in this sourced context
     local result
     result=$(check_status_page)
     assert_eq "none" "$result"
@@ -961,7 +976,7 @@ test_check_status_page_operational() {
 test_check_status_page_major_outage() {
     source "$PROJECT_ROOT/lib.sh"
     curl() { echo '{"status":{"indicator":"major","description":"Major System Outage"}}'; }
-    export -f curl
+    # curl function shadows the real binary in this sourced context
     local result
     result=$(check_status_page)
     assert_eq "major" "$result"
@@ -971,7 +986,7 @@ test_check_status_page_major_outage() {
 test_check_status_page_curl_failure() {
     source "$PROJECT_ROOT/lib.sh"
     curl() { return 1; }
-    export -f curl
+    # curl function shadows the real binary in this sourced context
     local result
     result=$(check_status_page 2>/dev/null)
     assert_eq "unknown" "$result"
@@ -1038,7 +1053,7 @@ check_status_page() {
     fi
     # Extract indicator without jq — parse "indicator":"value"
     local indicator
-    indicator=$(echo "$response" | grep -o '"indicator":"[^"]*"' | head -1 | sed 's/"indicator":"//;s/"//')
+    indicator=$(echo "$response" | grep -o '"indicator":"[^"]*"' | head -1 | sed 's/^"indicator":"//; s/"$//')
     if [[ -n "$indicator" ]]; then
         echo "$indicator"
     else
@@ -1333,9 +1348,21 @@ log_metrics() {
 
     mkdir -p "$state_dir"
 
+    # Escape single quotes for SQL safety
+    started_at="${started_at//\'/\'\'}"
+    recovered_at="${recovered_at//\'/\'\'}"
+    failure_type="${failure_type//\'/\'\'}"
+    tier_used="${tier_used//\'/\'\'}"
+    tool_used="${tool_used//\'/\'\'}"
+    platform="${platform//\'/\'\'}"
+
     # Try sqlite3 first
     if command -v sqlite3 &>/dev/null && [[ -n "${CFG_log_to_metrics:-true}" ]]; then
         local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
+
+        # Import any pending CSV rows first
+        import_csv_to_db "$state_dir"
+
         sqlite3 "$db" <<SQL 2>/dev/null && return 0
 CREATE TABLE IF NOT EXISTS outage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1868,12 +1895,11 @@ while true; do
     sleep "$CURRENT_INTERVAL"
 
     # Heartbeat check — self-terminate if stale
+    # NOTE: No `local` in main loop — `local` is only valid inside functions
     if [[ -f "$STATE_DIR/monitor.heartbeat" ]]; then
-        local hb_mtime
         hb_mtime=$(stat -c %Y "$STATE_DIR/monitor.heartbeat" 2>/dev/null || stat -f %m "$STATE_DIR/monitor.heartbeat" 2>/dev/null || echo 0)
-        local now
         now=$(date +%s)
-        local age=$((now - hb_mtime))
+        age=$((now - hb_mtime))
         if ((age > ${CFG_heartbeat_timeout:-600})); then
             notify "Heartbeat stale (${age}s). Self-terminating." "$LOG_FILE"
             exit 0
@@ -1881,21 +1907,20 @@ while true; do
     fi
 
     # Health check
-    local network_status="up"
+    network_status="up"
     if ! check_network; then
         network_status="down"
     fi
 
-    local status_indicator="unknown"
+    status_indicator="unknown"
     if [[ "$network_status" == "up" ]]; then
         status_indicator=$(check_status_page)
     fi
 
-    local health
     health=$(classify_health "$network_status" "$status_indicator")
 
     # Map health to sliding window value
-    local check_val=0
+    check_val=0
     [[ "$health" == "healthy" ]] && check_val=1
 
     sliding_window_push "$check_val"
@@ -1911,7 +1936,7 @@ while true; do
 
                     # Find next available tier for the message
                     load_tiers
-                    local next_tier_msg="no tier available"
+                    next_tier_msg="no tier available"
                     for tline in "${TIERS[@]}"; do
                         parse_tier_line "$tline"
                         [[ "$TIER_id" == "sidecar" ]] && continue
@@ -1953,18 +1978,18 @@ while true; do
                 notify_dispatch "Anthropic API: degradation escalated to full outage."
             else
                 # Still degraded — check if past threshold
-                local now
                 now=$(date +%s)
-                local degraded_duration=$((now - DEGRADED_STARTED))
+                degraded_duration=$((now - DEGRADED_STARTED))
                 if ((degraded_duration > ${CFG_degraded_threshold:-600})); then
                     DAEMON_STATE="MONITORING_RECOVERY"
                     OUTAGE_STARTED=$(date '+%Y-%m-%dT%H:%M:%S')
                     notify "Sustained degradation (${degraded_duration}s). Escalating to failover." "$LOG_FILE"
                     notify_dispatch "Anthropic API degraded for ${degraded_duration}s. Consider switching: fallback.sh 1"
+                    continue  # Skip backoff — already escalated
                 fi
                 # Exponential backoff
                 CURRENT_INTERVAL=$((CURRENT_INTERVAL * 2))
-                local max_interval=300
+                max_interval=300
                 ((CURRENT_INTERVAL > max_interval)) && CURRENT_INTERVAL=$max_interval
             fi
             ;;
@@ -1973,7 +1998,6 @@ while true; do
             if [[ "$(sliding_window_check_recovery "${CFG_recovery_successes:-10}" "${CFG_recovery_window:-12}")" == "true" ]]; then
                 DAEMON_STATE="WATCHING"
                 CURRENT_INTERVAL="${CFG_check_interval:-30}"
-                local recovered_at
                 recovered_at=$(date '+%Y-%m-%dT%H:%M:%S')
 
                 notify "Anthropic API recovered." "$LOG_FILE"
@@ -1984,8 +2008,7 @@ while true; do
 
                 # Log metrics
                 if [[ -n "$OUTAGE_STARTED" ]]; then
-                    local start_epoch end_epoch duration
-                    start_epoch=$(date -d "$OUTAGE_STARTED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "$OUTAGE_STARTED" +%s 2>/dev/null || echo 0)
+                    start_epoch=$(date_to_epoch "$OUTAGE_STARTED")
                     end_epoch=$(date +%s)
                     duration=$(( (end_epoch - start_epoch) / 60 ))
                     log_metrics "$OUTAGE_STARTED" "$recovered_at" "$duration" "outage" \
@@ -2261,9 +2284,11 @@ TOOLS_DIR="$CODEPENDENT_ROOT/tools"
 source_hash() {
     local tool="$1"
     local template="$TOOLS_DIR/$tool/template.md"
-    local inputs="$GUARDRAILS"
-    [[ -f "$template" ]] && inputs="$inputs $template"
-    cat $inputs | sha256sum | awk '{print $1}'
+    if [[ -f "$template" ]]; then
+        cat "$GUARDRAILS" "$template" | sha256sum | awk '{print $1}'
+    else
+        sha256sum "$GUARDRAILS" | awk '{print $1}'
+    fi
 }
 
 generate_for_tool() {
@@ -2323,6 +2348,15 @@ for root in "${roots[@]}"; do
 done
 
 DRIFT_FOUND=false
+
+# Global Claude config → ~/.claude/CLAUDE.md
+GLOBAL_CLAUDE="$HOME/.claude/CLAUDE.md"
+if "$VERIFY_MODE"; then
+    verify_for_tool "claude" "$GLOBAL_CLAUDE" || DRIFT_FOUND=true
+else
+    mkdir -p "$HOME/.claude"
+    generate_for_tool "claude" "$GLOBAL_CLAUDE"
+fi
 
 for project in "${PROJECTS[@]}"; do
     # Generate/verify each tool's config
