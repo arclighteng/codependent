@@ -186,6 +186,116 @@ check_tier_prerequisites() {
   return 0
 }
 
+# --- Cross-Platform Helpers ---
+
+date_to_epoch() {
+    local timestamp="$1"
+    # Try GNU date first (Linux, Git Bash)
+    date -d "$timestamp" +%s 2>/dev/null && return
+    # Try BSD date (macOS)
+    date -j -f "%Y-%m-%dT%H:%M:%S" "$timestamp" +%s 2>/dev/null && return
+    # Fallback: extract components and use printf
+    echo 0
+}
+
+# --- State Management ---
+
+write_state() {
+    local tier="$1"
+    local state_dir="${2:-$CODEPENDENT_ROOT/state}"
+    mkdir -p "$state_dir"
+    echo "$tier" > "$state_dir/current_tier"
+}
+
+read_state() {
+    local state_dir="${1:-$CODEPENDENT_ROOT/state}"
+    local file="$state_dir/current_tier"
+    if [[ -f "$file" ]]; then
+        cat "$file"
+    else
+        echo ""
+    fi
+}
+
+# --- Sliding Window ---
+
+SW_WINDOW=()
+SW_INDEX=0
+SW_SIZE=0
+SW_TOTAL_PUSHED=0
+
+sliding_window_init() {
+    local size="$1"
+    SW_SIZE="$size"
+    SW_INDEX=0
+    SW_TOTAL_PUSHED=0
+    SW_WINDOW=()
+    for ((i = 0; i < size; i++)); do
+        SW_WINDOW+=("")
+    done
+}
+
+sliding_window_push() {
+    local value="$1"  # 0=fail, 1=success
+    SW_WINDOW[$SW_INDEX]="$value"
+    SW_INDEX=$(( (SW_INDEX + 1) % SW_SIZE ))
+    ((SW_TOTAL_PUSHED++))
+}
+
+sliding_window_check_recovery() {
+    local required="$1"
+    local window="$2"
+
+    # Cold start: if we haven't filled the window yet,
+    # use reduced threshold of 3 consecutive successes
+    if ((SW_TOTAL_PUSHED < window)); then
+        local consecutive=0
+        for ((i = SW_TOTAL_PUSHED - 1; i >= 0; i--)); do
+            if [[ "${SW_WINDOW[$i]}" == "1" ]]; then
+                ((consecutive++))
+            else
+                break
+            fi
+        done
+        if ((consecutive >= 3)); then
+            echo "true"
+        else
+            echo "false"
+        fi
+        return
+    fi
+
+    # Normal: count successes in window
+    local successes=0
+    for val in "${SW_WINDOW[@]}"; do
+        [[ "$val" == "1" ]] && ((successes++))
+    done
+    if ((successes >= required)); then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
+sliding_window_check_failure() {
+    local required="$1"
+
+    if ((SW_TOTAL_PUSHED < required)); then
+        echo "false"
+        return
+    fi
+
+    # Check last N entries are all failures
+    for ((i = 1; i <= required; i++)); do
+        local idx=$(( (SW_INDEX - i + SW_SIZE) % SW_SIZE ))
+        if [[ "${SW_WINDOW[$idx]}" != "0" ]]; then
+            echo "false"
+            return
+        fi
+    done
+    echo "true"
+}
+
 # --- Stubs (implemented in later tasks) ---
 start_monitor() { :; }
 stop_monitor() { :; }
