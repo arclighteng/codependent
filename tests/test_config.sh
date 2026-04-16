@@ -150,6 +150,7 @@ test_validate_config_accepts_notify_slack_url() {
 test_validate_config_rejects_bad_url() {
     CFG_notify_method="slack"
     CFG_notify_slack_url="not-a-url"
+    CFG_notify_webhook_url=""
     local rc=0
     validate_config 2>/dev/null || rc=$?
     assert_eq "1" "$rc" "non-URL notify_slack_url must fail validation"

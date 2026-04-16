@@ -97,7 +97,7 @@ validate_config() {
     while IFS= read -r ch; do
       [[ -z "$ch" ]] && continue
       if [[ ! "$ch" =~ ^(terminal|toast|slack|webhook)$ ]]; then
-        echo "validate_config: invalid channel in notify_method: '${ch}' (allowed: terminal|toast|slack|webhook|both)" >&2
+        echo "validate_config: invalid channel in notify_method: '${ch}' (allowed: terminal|toast|slack|webhook)" >&2
         (( errors++ )) || true
       fi
     done < <(parse_notify_channels "$nm_val")
