@@ -492,7 +492,14 @@ log_metrics() {
     # Try sqlite3 first
     if command -v sqlite3 &>/dev/null && [[ "${CFG_log_to_metrics:-true}" == "true" ]]; then
         local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
+        # Non-fatal: a transient failure here (locked DB, permission, corrupt
+        # header) must not abort log_metrics under set -e — the INSERT below
+        # will also fail and fall through to the CSV path.
         init_metrics_db "$db" || true
+        # Separate INSERT invocation (deliberately not wrapped with CREATE in a
+        # single sqlite3 session): the Task 8/9 recovery path will retry this
+        # INSERT after renaming+recreating a corrupted DB, and the split makes
+        # that retry trivial. If the INSERT fails, CSV fallback below catches it.
         if sqlite3 "$db" \
             "INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');" 2>/dev/null
         then

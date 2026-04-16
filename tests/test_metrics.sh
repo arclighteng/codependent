@@ -142,6 +142,19 @@ test_init_metrics_db_creates_table() {
     tables=$(sqlite3 "$tmpdb" ".tables" 2>/dev/null)
     assert_contains "$tables" "outage_events"
 
+    # Column-level invariant: schema must preserve all known columns. Round 3
+    # adds no columns; any future migration must update this test deliberately.
+    local cols
+    cols=$(sqlite3 "$tmpdb" "PRAGMA table_info(outage_events);" 2>/dev/null)
+    assert_contains "$cols" "started_at"
+    assert_contains "$cols" "recovered_at"
+    assert_contains "$cols" "duration_minutes"
+    assert_contains "$cols" "failure_type"
+    assert_contains "$cols" "tier_used"
+    assert_contains "$cols" "tool_used"
+    assert_contains "$cols" "auto_recovered"
+    assert_contains "$cols" "platform"
+
     rm -f "$tmpdb"
 }
 
@@ -151,8 +164,8 @@ test_init_metrics_db_idempotent() {
     rm -f "$tmpdb"
 
     init_metrics_db "$tmpdb"
-    init_metrics_db "$tmpdb"  # second call must not fail
-
-    assert_eq "0" "$?" "init_metrics_db must be idempotent"
+    local rc=0
+    init_metrics_db "$tmpdb" || rc=$?  # second call must not fail
+    assert_eq "0" "$rc" "init_metrics_db must be idempotent"
     rm -f "$tmpdb"
 }
