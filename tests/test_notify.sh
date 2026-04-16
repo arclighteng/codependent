@@ -178,6 +178,30 @@ _mock_curl_teardown() {
     unset _CURL_LOG
 }
 
+test_json_escape_backslash() {
+    local out
+    out=$(_json_escape 'a\b')
+    assert_eq 'a\\b' "$out" "backslash should be doubled"
+}
+
+test_json_escape_quotes() {
+    local out
+    out=$(_json_escape 'say "hi"')
+    assert_eq 'say \"hi\"' "$out" "double quotes should be escaped"
+}
+
+test_json_escape_newline() {
+    local out
+    out=$(_json_escape $'line1\nline2')
+    assert_eq 'line1\nline2' "$out" "newline should become \\n"
+}
+
+test_json_escape_mixed() {
+    local out
+    out=$(_json_escape $'a\\b"c\nd')
+    assert_eq 'a\\b\"c\nd' "$out" "all special chars should be escaped"
+}
+
 test_notify_slack_posts_payload() {
     _mock_curl_setup
     notify_slack "https://hooks.slack.com/services/XXX" "critical" "API down"
@@ -193,7 +217,7 @@ test_notify_slack_missing_url_warns() {
     _mock_curl_setup
     local out
     out=$(notify_slack "" "info" "hello" 2>&1)
-    assert_contains "$out" "empty"
+    assert_contains "$out" "url is empty"
     _mock_curl_teardown
 }
 

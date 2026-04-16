@@ -420,6 +420,29 @@ notify_terminal() {
     printf '\a' 2>/dev/null || true
 }
 
+# _json_escape STRING
+# Prints STRING with \, ", newline, carriage return, and tab escaped for JSON.
+_json_escape() {
+    local s="$1" out="" i c
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        if [[ "$c" == '\' ]]; then
+            out="${out}\\\\"
+        elif [[ "$c" == '"' ]]; then
+            out="${out}\\\""
+        elif [[ "$c" == $'\n' ]]; then
+            out="${out}\\n"
+        elif [[ "$c" == $'\r' ]]; then
+            out="${out}\\r"
+        elif [[ "$c" == $'\t' ]]; then
+            out="${out}\\t"
+        else
+            out="${out}${c}"
+        fi
+    done
+    printf '%s' "$out"
+}
+
 # notify_slack URL LEVEL MESSAGE
 # Posts `{"text":"codependent [<level>]: <message>"}` to a Slack incoming webhook.
 # Failures are logged and swallowed — never fatal.
@@ -433,11 +456,12 @@ notify_slack() {
         return 0
     fi
 
-    # Escape double quotes in message for JSON
-    local esc="${message//\\/\\\\}"
-    esc="${esc//\"/\\\"}"
+    local esc
+    esc=$(_json_escape "$message")
+    local lvl
+    lvl=$(_json_escape "$level")
     local payload
-    payload=$(printf '{"text":"codependent [%s]: %s"}' "$level" "$esc")
+    payload=$(printf '{"text":"codependent [%s]: %s"}' "$lvl" "$esc")
 
     if ! curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
             -d "$payload" "$url" >/dev/null 2>&1; then
@@ -461,11 +485,13 @@ notify_webhook() {
 
     local ts
     ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-    local esc="${message//\\/\\\\}"
-    esc="${esc//\"/\\\"}"
+    local esc_msg esc_lvl esc_evt
+    esc_msg=$(_json_escape "$message")
+    esc_lvl=$(_json_escape "$level")
+    esc_evt=$(_json_escape "$event")
     local payload
     payload=$(printf '{"timestamp":"%s","level":"%s","event":"%s","message":"%s"}' \
-        "$ts" "$level" "$event" "$esc")
+        "$ts" "$esc_lvl" "$esc_evt" "$esc_msg")
 
     if ! curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
             -d "$payload" "$url" >/dev/null 2>&1; then
