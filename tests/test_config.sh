@@ -137,3 +137,29 @@ EOF
   validate_config 2>/dev/null || result=$?
   assert_eq "1" "$result" "validate_config should return 1 for on_failure=notfy (typo)"
 }
+
+test_validate_config_accepts_notify_slack_url() {
+    CFG_notify_method="terminal,slack"
+    CFG_notify_slack_url="https://hooks.slack.com/services/T/B/XYZ"
+    CFG_notify_webhook_url=""
+    if ! validate_config 2>/dev/null; then
+        assert_eq "valid" "invalid" "well-formed slack URL should validate"
+    fi
+}
+
+test_validate_config_rejects_bad_url() {
+    CFG_notify_method="slack"
+    CFG_notify_slack_url="not-a-url"
+    local rc=0
+    validate_config 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "non-URL notify_slack_url must fail validation"
+}
+
+test_validate_config_accepts_multi_channel_method() {
+    CFG_notify_method="terminal,slack,webhook"
+    CFG_notify_slack_url="https://a.example"
+    CFG_notify_webhook_url="https://b.example"
+    if ! validate_config 2>/dev/null; then
+        assert_eq "valid" "invalid" "multi-channel notify_method should validate"
+    fi
+}

@@ -74,7 +74,6 @@ validate_config() {
     [health_check]="status_page|api_call|both"
     [on_recovery]="notify|auto_switch|both"
     [on_failure]="notify|auto_failover|both"
-    [notify_method]="terminal|toast|both"
   )
 
   for field in "${!enum_fields[@]}"; do
@@ -88,6 +87,30 @@ validate_config() {
         echo "validate_config: invalid value for ${field}: '${val}' (allowed: ${allowed})" >&2
         (( errors++ )) || true
       fi
+    fi
+  done
+
+  # notify_method: comma-separated list of {terminal, toast, slack, webhook, both}
+  local nm_val="${CFG_notify_method:-}"
+  if [[ -n "$nm_val" ]]; then
+    local ch
+    while IFS= read -r ch; do
+      [[ -z "$ch" ]] && continue
+      if [[ ! "$ch" =~ ^(terminal|toast|slack|webhook)$ ]]; then
+        echo "validate_config: invalid channel in notify_method: '${ch}' (allowed: terminal|toast|slack|webhook|both)" >&2
+        (( errors++ )) || true
+      fi
+    done < <(parse_notify_channels "$nm_val")
+  fi
+
+  # URL validators: must be http(s)://... when non-empty
+  local url_fields=(notify_slack_url notify_webhook_url)
+  for field in "${url_fields[@]}"; do
+    local varname="CFG_${field}"
+    local val="${!varname:-}"
+    if [[ -n "$val" && ! "$val" =~ ^https?:// ]]; then
+      echo "validate_config: invalid value for ${field}: '${val}' (must start with http:// or https://)" >&2
+      (( errors++ )) || true
     fi
   done
 
