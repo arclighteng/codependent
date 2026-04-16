@@ -120,6 +120,72 @@ validate_config() {
   return 0
 }
 
+# ── parse_tier_line ───────────────────────────────────────────────────────────
+# Usage: parse_tier_line "<line>"
+# Parses one line from tiers.conf (delimited by " | ") and sets:
+#   TIER_id, TIER_tool, TIER_command, TIER_required_env, TIER_check_cmd
+
+parse_tier_line() {
+  local line="$1"
+
+  TIER_id="$(          echo "$line" | awk -F' [|] ' '{print $1}' | xargs )"
+  TIER_tool="$(        echo "$line" | awk -F' [|] ' '{print $2}' | xargs )"
+  TIER_command="$(     echo "$line" | awk -F' [|] ' '{print $3}' | xargs )"
+  TIER_required_env="$(echo "$line" | awk -F' [|] ' '{print $4}' | xargs )"
+  TIER_check_cmd="$(   echo "$line" | awk -F' [|] ' '{print $5}' | xargs )"
+}
+
+# ── load_tiers ────────────────────────────────────────────────────────────────
+# Usage: load_tiers [path]
+# Reads tiers.conf line by line, skipping comments and blanks.
+# Stores each valid line in the TIERS array.
+
+load_tiers() {
+  local tiers_file="${1:-$CODEPENDENT_ROOT/tiers.conf}"
+
+  if [[ ! -f "$tiers_file" ]]; then
+    echo "load_tiers: file not found: $tiers_file" >&2
+    return 1
+  fi
+
+  TIERS=()
+
+  while IFS= read -r line; do
+    # Skip blank lines
+    [[ -z "${line// }" ]] && continue
+
+    # Skip comment lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+
+    TIERS+=( "$line" )
+  done < "$tiers_file"
+}
+
+# ── check_tier_prerequisites ──────────────────────────────────────────────────
+# Checks the currently parsed tier (TIER_* variables) for readiness.
+# Returns 0 if ready, 1 with a message to stderr if not.
+
+check_tier_prerequisites() {
+  # Run the check command (comes from our own config, not user input — eval is safe here)
+  if [[ -n "$TIER_check_cmd" ]]; then
+    if ! eval "$TIER_check_cmd" > /dev/null 2>&1; then
+      echo "check_tier_prerequisites: tool not available for tier '${TIER_id}': ${TIER_check_cmd}" >&2
+      return 1
+    fi
+  fi
+
+  # Check required environment variable
+  if [[ -n "$TIER_required_env" ]]; then
+    local env_val="${!TIER_required_env:-}"
+    if [[ -z "$env_val" ]]; then
+      echo "check_tier_prerequisites: required env var '${TIER_required_env}' is not set (tier '${TIER_id}')" >&2
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 # --- Stubs (implemented in later tasks) ---
 start_monitor() { :; }
 stop_monitor() { :; }
