@@ -79,6 +79,7 @@ DAEMON_STATE="WATCHING"
 OUTAGE_STARTED=""
 DEGRADED_STARTED=""
 CURRENT_INTERVAL="${CFG_check_interval:-30}"
+consecutive_network_failures=0
 
 LOG_FILE="$STATE_DIR/monitor.log"
 
@@ -104,6 +105,15 @@ while true; do
     status_indicator="unknown"
     if [[ "$network_status" == "up" ]]; then
         status_indicator=$(check_status_page)
+    fi
+
+    # Track network-failure streak for adaptive backoff in WATCHING
+    if [[ "$network_status" == "down" ]]; then
+        consecutive_network_failures=$((consecutive_network_failures + 1))
+        CURRENT_INTERVAL=$(next_check_interval "${CFG_check_interval:-30}" "$consecutive_network_failures")
+    else
+        consecutive_network_failures=0
+        CURRENT_INTERVAL="${CFG_check_interval:-30}"
     fi
 
     health=$(classify_health "$network_status" "$status_indicator")
@@ -192,10 +202,12 @@ while true; do
                     notify_dispatch "Anthropic API degraded for ${degraded_duration}s. Run: fallback.sh"
                     continue  # Skip backoff — already escalated
                 fi
-                # Exponential backoff
-                CURRENT_INTERVAL=$((CURRENT_INTERVAL * 2))
-                max_interval=300
-                ((CURRENT_INTERVAL > max_interval)) && CURRENT_INTERVAL=$max_interval
+                # Jittered exponential backoff with 300s cap.
+                # Compute from base, using observed degraded_duration / base as failure count.
+                base="${CFG_check_interval:-30}"
+                deg_failures=$(( degraded_duration / base ))
+                if (( deg_failures < 0 )); then deg_failures=0; fi
+                CURRENT_INTERVAL=$(next_check_interval "$base" "$deg_failures")
             fi
             ;;
 

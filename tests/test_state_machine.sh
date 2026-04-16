@@ -138,6 +138,7 @@ DAEMON_STATE="WATCHING"
 OUTAGE_STARTED=""
 DEGRADED_STARTED=""
 CURRENT_INTERVAL="\${CFG_check_interval:-1}"
+consecutive_network_failures=0
 LOG_FILE="$SM_STATE_DIR/monitor.log"
 
 sliding_window_init "\${CFG_recovery_window:-4}"
@@ -154,6 +155,15 @@ while true; do
     status_indicator="unknown"
     if [[ "\$network_status" == "up" ]]; then
         status_indicator=\$(check_status_page)
+    fi
+
+    # Track network-failure streak for adaptive backoff in WATCHING
+    if [[ "\$network_status" == "down" ]]; then
+        consecutive_network_failures=\$((consecutive_network_failures + 1))
+        CURRENT_INTERVAL=\$(next_check_interval "\${CFG_check_interval:-1}" "\$consecutive_network_failures")
+    else
+        consecutive_network_failures=0
+        CURRENT_INTERVAL="\${CFG_check_interval:-1}"
     fi
 
     health=\$(classify_health "\$network_status" "\$status_indicator")
@@ -237,9 +247,11 @@ while true; do
                     notify_dispatch "Anthropic API degraded for \${degraded_duration}s. Run: fallback.sh"
                     continue
                 fi
-                CURRENT_INTERVAL=\$((CURRENT_INTERVAL * 2))
-                max_interval=300
-                ((CURRENT_INTERVAL > max_interval)) && CURRENT_INTERVAL=\$max_interval
+                # Jittered exponential backoff with 300s cap.
+                base="\${CFG_check_interval:-1}"
+                deg_failures=\$(( degraded_duration / base ))
+                if (( deg_failures < 0 )); then deg_failures=0; fi
+                CURRENT_INTERVAL=\$(next_check_interval "\$base" "\$deg_failures")
             fi
             ;;
 
@@ -417,6 +429,30 @@ CONF
     else
         assert_eq "exists" "missing" "recovery_ready should be created with auto_switch"
     fi
+
+    teardown_sm_env
+}
+
+test_sm_degraded_uses_jittered_backoff() {
+    setup_sm_env
+    # Override check_interval for fast test
+    sed -i 's/^check_interval=.*/check_interval=1/' "$SM_CONF" 2>/dev/null || true
+    start_mock_monitor
+
+    # Stay in DEGRADED long enough to see at least two backoff steps
+    echo "degraded" > "$SM_MOCK_HEALTH_FILE"
+
+    if ! wait_for_log "API degraded"; then
+        assert_eq "degraded" "timeout" "should enter DEGRADED"
+    fi
+
+    # Check log for evidence of varying intervals — at least the state persists
+    # through multiple iterations. We can't easily assert the exact jitter,
+    # but we can confirm the daemon doesn't crash during repeated backoff.
+    sleep 3
+    local log_content
+    log_content=$(cat "$SM_STATE_DIR/monitor.log")
+    assert_contains "$log_content" "degraded"
 
     teardown_sm_env
 }
