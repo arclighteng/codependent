@@ -67,3 +67,9 @@ test_check_tier_prerequisites_missing_env() {
   check_tier_prerequisites 2>/dev/null || result=$?
   assert_eq "1" "$result" "check_tier_prerequisites should return 1 when required env var is unset"
 }
+
+test_parse_tier_line_expands_local_model() {
+  CFG_local_model="gemma3"
+  parse_tier_line "3 | aider | aider --model ollama/\$local_model | | command -v aider"
+  assert_eq "aider --model ollama/gemma3" "$TIER_command" "should expand \$local_model to CFG_local_model value"
+}

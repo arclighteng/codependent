@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
+source "$PROJECT_ROOT/lib.sh"
+
 test_log_metrics_csv_fallback() {
-    source "$PROJECT_ROOT/lib.sh"
     local test_dir="$(mktemp -d)"
     # Mock sqlite3 to fail so we exercise CSV fallback
     sqlite3() { return 1; }
@@ -15,8 +16,68 @@ test_log_metrics_csv_fallback() {
     rm -rf "$test_dir"
 }
 
+test_log_metrics_csv_fields_are_quoted() {
+    local test_dir="$(mktemp -d)"
+    sqlite3() { return 1; }
+    log_metrics "2026-04-15T10:00:00" "2026-04-15T11:00:00" "60" "outage" "2a" "aider" "true" "linux" "$test_dir"
+    unset -f sqlite3
+    local content
+    content=$(tail -1 "$test_dir/metrics.csv")
+    # Each field should be double-quoted
+    assert_contains "$content" '"outage"'
+    assert_contains "$content" '"aider"'
+    rm -rf "$test_dir"
+}
+
+test_import_csv_to_db_clears_csv_on_success() {
+    local test_dir="$(mktemp -d)"
+    # Create a CSV with a header and one row
+    cat > "$test_dir/metrics.csv" <<'CSV'
+started_at,recovered_at,duration_minutes,failure_type,tier_used,tool_used,auto_recovered,platform
+"2026-04-15T10:00:00","2026-04-15T11:00:00","60","outage","1","codex","true","linux"
+CSV
+    # Mock sqlite3 to succeed
+    sqlite3() { return 0; }
+    import_csv_to_db "$test_dir"
+    unset -f sqlite3
+    # CSV should be deleted after successful import
+    if [[ -f "$test_dir/metrics.csv" ]]; then
+        assert_eq "deleted" "exists" "CSV should be deleted after successful import"
+    fi
+    rm -rf "$test_dir"
+}
+
+test_import_csv_to_db_keeps_failed_rows() {
+    local test_dir="$(mktemp -d)"
+    # Create a CSV with two rows
+    cat > "$test_dir/metrics.csv" <<'CSV'
+started_at,recovered_at,duration_minutes,failure_type,tier_used,tool_used,auto_recovered,platform
+"2026-04-15T10:00:00","","","outage","1","codex","false","linux"
+"2026-04-15T12:00:00","","","outage","2a","aider","false","linux"
+CSV
+    # Mock sqlite3 to always fail
+    sqlite3() { return 1; }
+    import_csv_to_db "$test_dir"
+    unset -f sqlite3
+    # CSV should still exist with failed rows
+    assert_file_exists "$test_dir/metrics.csv"
+    local line_count
+    line_count=$(wc -l < "$test_dir/metrics.csv")
+    # Header + 2 failed rows = 3 lines
+    assert_eq "3" "$line_count" "CSV should have header + 2 failed rows"
+    rm -rf "$test_dir"
+}
+
+test_import_csv_to_db_noop_without_csv() {
+    local test_dir="$(mktemp -d)"
+    # No CSV file exists — should be a no-op
+    local rc=0
+    import_csv_to_db "$test_dir" || rc=$?
+    assert_eq "0" "$rc" "import_csv_to_db should return 0 when no CSV exists"
+    rm -rf "$test_dir"
+}
+
 test_rotate_log_under_limit() {
-    source "$PROJECT_ROOT/lib.sh"
     local test_log="$(mktemp)"
     echo "small content" > "$test_log"
     rotate_log "$test_log" 1048576
@@ -27,7 +88,6 @@ test_rotate_log_under_limit() {
 }
 
 test_rotate_log_over_limit() {
-    source "$PROJECT_ROOT/lib.sh"
     local test_log="$(mktemp)"
     # Write more than 100 bytes
     for i in {1..20}; do
@@ -43,4 +103,29 @@ test_rotate_log_over_limit() {
         assert_true "$([[ $size -lt 100 ]] && echo true || echo false)" "rotated log should be small"
     fi
     rm -f "$test_log" "${test_log}.1" "${test_log}.tmp"
+}
+
+test_date_to_epoch_returns_nonzero_for_valid_timestamp() {
+    local result
+    result=$(date_to_epoch "2026-04-15T10:00:00")
+    # Should return a large positive integer (epoch seconds)
+    if [[ "$result" =~ ^[0-9]+$ && "$result" -gt 1000000000 ]]; then
+        assert_eq "0" "0" "date_to_epoch returned valid epoch: $result"
+    else
+        assert_eq "valid_epoch" "$result" "date_to_epoch should return a valid epoch for a known timestamp"
+    fi
+}
+
+test_date_to_epoch_fallback_returns_zero() {
+    # Mock both date variants to fail
+    date() {
+        if [[ "$1" == "-d" || "$1" == "-j" ]]; then
+            return 1
+        fi
+        command date "$@"
+    }
+    local result
+    result=$(date_to_epoch "invalid-not-a-date")
+    assert_eq "0" "$result" "date_to_epoch should return 0 when both date variants fail"
+    unset -f date
 }

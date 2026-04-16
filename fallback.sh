@@ -58,8 +58,15 @@ show_status() {
     # Failover ready
     if [[ -f "$state_dir/failover_ready" ]]; then
         echo ""
-        echo "⚡ Failover recommendation ready: $(cat "$state_dir/failover_ready")"
+        echo "⚡ Failover recommendation ready: Tier $(cat "$state_dir/failover_ready")"
         echo "   Run the suggested command, or dismiss with: rm $state_dir/failover_ready"
+    fi
+
+    # Recovery ready
+    if [[ -f "$state_dir/recovery_ready" ]]; then
+        echo ""
+        echo "✓ Recovery detected — Claude Code is back. Run: fallback.sh 0"
+        echo "   Dismiss with: rm $state_dir/recovery_ready"
     fi
 }
 
@@ -109,9 +116,15 @@ walk_tiers() {
     local state_dir="${STATE_DIR:-$CODEPENDENT_ROOT/state}"
     local started=false
 
+    # Check for recovery_ready — switch back to Tier 0
+    if [[ -z "$start_tier" && -f "$state_dir/recovery_ready" ]]; then
+        start_tier=$(<"$state_dir/recovery_ready")
+        rm -f "$state_dir/recovery_ready"
+    fi
+
     # Check for failover_ready recommendation
     if [[ -z "$start_tier" && -f "$state_dir/failover_ready" ]]; then
-        start_tier=$(cat "$state_dir/failover_ready" | head -1)
+        start_tier=$(<"$state_dir/failover_ready")
         rm -f "$state_dir/failover_ready"
     fi
 
@@ -131,8 +144,9 @@ walk_tiers() {
             write_state "$TIER_id" "$state_dir"
             touch "$state_dir/monitor.heartbeat"
             start_monitor
-            # Replace this process with the tool
-            exec $TIER_command
+            # Replace this process with the tool (array prevents glob expansion)
+            read -ra _cmd <<< "$TIER_command"
+            exec "${_cmd[@]}"
         else
             echo "Tier $TIER_id ($TIER_tool): skipping — $(check_tier_prerequisites 2>&1 || true)"
         fi

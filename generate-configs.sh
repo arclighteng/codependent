@@ -14,7 +14,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --config) CONFIG_FILE="$2"; shift 2 ;;
         --verify) VERIFY_MODE=true; shift ;;
-        *) shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 

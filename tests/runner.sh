@@ -4,6 +4,11 @@
 
 set -euo pipefail
 
+# Disable job-control notifications ("Killed" messages) when we SIGKILL
+# unresponsive background processes during test teardown. These are not
+# failures — the tests have already passed by the time we force-kill.
+set +m
+
 export PROJECT_ROOT
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 

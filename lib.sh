@@ -98,7 +98,6 @@ validate_config() {
     recovery_window
     failure_window
     degraded_threshold
-    heartbeat_timeout
     max_log_size
   )
 
@@ -113,6 +112,13 @@ validate_config() {
       fi
     fi
   done
+
+  # Model name validation: no spaces or shell metacharacters
+  local model_val="${CFG_local_model:-}"
+  if [[ -n "$model_val" && ! "$model_val" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+    echo "validate_config: invalid value for local_model: '${model_val}' (must match [A-Za-z0-9._:-]+)" >&2
+    (( errors++ )) || true
+  fi
 
   if (( errors > 0 )); then
     return 1
@@ -133,6 +139,9 @@ parse_tier_line() {
   TIER_command="$(     echo "$line" | awk -F' [|] ' '{print $3}' | xargs )"
   TIER_required_env="$(echo "$line" | awk -F' [|] ' '{print $4}' | xargs )"
   TIER_check_cmd="$(   echo "$line" | awk -F' [|] ' '{print $5}' | xargs )"
+
+  # Expand config variables in the command (e.g., $local_model → gemma3)
+  TIER_command="${TIER_command//\$local_model/${CFG_local_model:-}}"
 }
 
 # ── load_tiers ────────────────────────────────────────────────────────────────
@@ -236,10 +245,15 @@ sliding_window_init() {
 }
 
 sliding_window_push() {
+    if [[ $SW_SIZE -le 0 ]]; then
+        echo "sliding_window_push: not initialised (call sliding_window_init first)" >&2
+        return 1
+    fi
     local value="$1"  # 0=fail, 1=success
     SW_WINDOW[$SW_INDEX]="$value"
     SW_INDEX=$(( (SW_INDEX + 1) % SW_SIZE ))
-    ((SW_TOTAL_PUSHED++))
+    # Use $((x + 1)) not ((x++)) — under set -e, ((0++)) returns exit 1 and kills script
+    SW_TOTAL_PUSHED=$((SW_TOTAL_PUSHED + 1))
 }
 
 sliding_window_check_recovery() {
@@ -252,7 +266,7 @@ sliding_window_check_recovery() {
         local consecutive=0
         for ((i = SW_TOTAL_PUSHED - 1; i >= 0; i--)); do
             if [[ "${SW_WINDOW[$i]}" == "1" ]]; then
-                ((consecutive++))
+                consecutive=$((consecutive + 1))
             else
                 break
             fi
@@ -268,7 +282,9 @@ sliding_window_check_recovery() {
     # Normal: count successes in window
     local successes=0
     for val in "${SW_WINDOW[@]}"; do
-        [[ "$val" == "1" ]] && ((successes++))
+        if [[ "$val" == "1" ]]; then
+            successes=$((successes + 1))
+        fi
     done
     if ((successes >= required)); then
         echo "true"
@@ -354,6 +370,18 @@ notify_toast() {
     local message="$1"
     local title="${2:-codependent}"
 
+    # Sanitize inputs to prevent shell/PowerShell injection
+    # Strip characters that break out of quoted contexts
+    message="${message//\`/}"
+    message="${message//\$/}"
+    message="${message//\"/}"
+    title="${title//\`/}"
+    title="${title//\$/}"
+    title="${title//\"/}"
+    # Escape single quotes for PowerShell single-quoted strings ('' = literal ')
+    message="${message//\'/\'\'}"
+    title="${title//\'/\'\'}"
+
     case "${PLATFORM:-}" in
         macos)
             osascript -e "display notification \"$message\" with title \"$title\"" 2>/dev/null || true
@@ -414,6 +442,10 @@ build_recovery_message() {
     echo "Anthropic API recovered — stable. Switch back with: fallback.sh 0"
 }
 
+build_degraded_message() {
+    echo "Anthropic API degraded — rate limited. Monitor with: fallback.sh status"
+}
+
 # --- Metrics ---
 
 log_metrics() {
@@ -438,13 +470,10 @@ log_metrics() {
     platform="${platform//\'/\'\'}"
 
     # Try sqlite3 first
-    if command -v sqlite3 &>/dev/null && [[ -n "${CFG_log_to_metrics:-true}" ]]; then
+    if command -v sqlite3 &>/dev/null && [[ "${CFG_log_to_metrics:-true}" == "true" ]]; then
         local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
 
-        # Import any pending CSV rows first
-        import_csv_to_db "$state_dir"
-
-        sqlite3 "$db" <<SQL 2>/dev/null && return 0
+        if sqlite3 "$db" <<SQL 2>/dev/null
 CREATE TABLE IF NOT EXISTS outage_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -459,6 +488,11 @@ CREATE TABLE IF NOT EXISTS outage_events (
 INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform)
 VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');
 SQL
+        then
+            # Current row succeeded — now drain any pending CSV rows
+            import_csv_to_db "$state_dir"
+            return 0
+        fi
     fi
 
     # CSV fallback
@@ -466,7 +500,9 @@ SQL
     if [[ ! -f "$csv" ]]; then
         echo "started_at,recovered_at,duration_minutes,failure_type,tier_used,tool_used,auto_recovered,platform" > "$csv"
     fi
-    echo "$started_at,$recovered_at,$duration_minutes,$failure_type,$tier_used,$tool_used,$auto_recovered,$platform" >> "$csv"
+    printf '"%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+        "$started_at" "$recovered_at" "$duration_minutes" "$failure_type" \
+        "$tier_used" "$tool_used" "$auto_recovered" "$platform" >> "$csv"
 }
 
 import_csv_to_db() {
@@ -477,13 +513,42 @@ import_csv_to_db() {
     command -v sqlite3 &>/dev/null || return 0
 
     local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
-    # Skip header line, import each row
-    tail -n +2 "$csv" | while IFS=, read -r started_at recovered_at duration_minutes failure_type tier_used tool_used auto_recovered platform; do
-        sqlite3 "$db" "INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');" 2>/dev/null
-    done
+    local header=""
+    header=$(head -1 "$csv")
 
-    # Clear CSV after successful import
+    # Skip header line, import each row
+    # CSV fields are double-quoted; strip quotes before processing
+    while IFS=, read -r started_at recovered_at duration_minutes failure_type tier_used tool_used auto_recovered platform; do
+        # Strip surrounding double quotes from each field
+        started_at="${started_at//\"/}"
+        recovered_at="${recovered_at//\"/}"
+        duration_minutes="${duration_minutes//\"/}"
+        failure_type="${failure_type//\"/}"
+        tier_used="${tier_used//\"/}"
+        tool_used="${tool_used//\"/}"
+        auto_recovered="${auto_recovered//\"/}"
+        platform="${platform//\"/}"
+        # Escape single quotes for SQL safety
+        local sa="${started_at//\'/\'\'}"
+        local ra="${recovered_at//\'/\'\'}"
+        local ft="${failure_type//\'/\'\'}"
+        local tu="${tier_used//\'/\'\'}"
+        local tou="${tool_used//\'/\'\'}"
+        local pl="${platform//\'/\'\'}"
+        if ! sqlite3 "$db" "INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$sa', '$ra', '$duration_minutes', '$ft', '$tu', '$tou', '$auto_recovered', '$pl');" 2>/dev/null; then
+            printf '"%s","%s","%s","%s","%s","%s","%s","%s"\n' \
+                "$started_at" "$recovered_at" "$duration_minutes" "$failure_type" \
+                "$tier_used" "$tool_used" "$auto_recovered" "$platform" >> "$state_dir/metrics.csv.retry"
+        fi
+    done < <(tail -n +2 "$csv")
+
+    # Replace CSV with retry file (failed rows only), or delete if all succeeded
     rm -f "$csv"
+    if [[ -f "$state_dir/metrics.csv.retry" ]]; then
+        echo "$header" > "$csv"
+        cat "$state_dir/metrics.csv.retry" >> "$csv"
+        rm -f "$state_dir/metrics.csv.retry"
+    fi
 }
 
 # --- Log Rotation ---
@@ -494,12 +559,18 @@ rotate_log() {
 
     [[ -f "$log_file" ]] || return 0
 
-    local size
-    size=$(wc -c < "$log_file" 2>/dev/null || echo 0)
+    # wc may fail on Windows Git Bash if the file's parent directory
+    # was removed mid-loop (teardown race). Use a local fallback that
+    # doesn't invoke any subshell writes — just default to 0 on error.
+    local size=0
+    if [[ -r "$log_file" ]]; then
+        size=$(wc -c < "$log_file" 2>/dev/null) || size=0
+        [[ -z "$size" ]] && size=0
+    fi
 
     if ((size > max_size)); then
         # Safe rotation: write-new-then-rename
-        touch "${log_file}.tmp"
+        touch "${log_file}.tmp" 2>/dev/null || return 0
         mv "$log_file" "${log_file}.1" 2>/dev/null || true
         mv "${log_file}.tmp" "$log_file" 2>/dev/null || true
     fi
@@ -536,7 +607,19 @@ stop_monitor() {
     if [[ -f "$pid_file" ]]; then
         local pid
         pid=$(cat "$pid_file")
-        kill "$pid" 2>/dev/null || true
+        if kill "$pid" 2>/dev/null; then
+            # Graceful wait, then SIGKILL fallback — the monitor may be
+            # blocked in `sleep` and not respond to SIGTERM immediately
+            # (Windows Git Bash quirk).
+            local i
+            for ((i = 0; i < 50; i++)); do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.2
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        fi
         rm -f "$pid_file"
     fi
 }

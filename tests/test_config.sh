@@ -77,6 +77,42 @@ EOF
   assert_eq "0" "$result" "validate_config should return 0 for valid config"
 }
 
+test_load_config_missing_file_returns_error() {
+  local result=0
+  load_config "/nonexistent/path/to/config.conf" 2>/dev/null || result=$?
+  assert_eq "1" "$result" "load_config should return 1 for missing file"
+}
+
+test_validate_config_rejects_zero_numeric() {
+  local tmpfile
+  tmpfile="$(mktemp)"
+  cat > "$tmpfile" <<'EOF'
+check_interval=0
+EOF
+
+  load_config "$tmpfile"
+  rm -f "$tmpfile"
+
+  local result=0
+  validate_config 2>/dev/null || result=$?
+  assert_eq "1" "$result" "validate_config should reject 0 for check_interval"
+}
+
+test_validate_config_rejects_invalid_local_model() {
+  local tmpfile
+  tmpfile="$(mktemp)"
+  cat > "$tmpfile" <<'EOF'
+local_model=gemma3 --evil-flag
+EOF
+
+  load_config "$tmpfile"
+  rm -f "$tmpfile"
+
+  local result=0
+  validate_config 2>/dev/null || result=$?
+  assert_eq "1" "$result" "validate_config should reject local_model with spaces"
+}
+
 test_validate_config_rejects_invalid_on_failure() {
   local tmpfile
   tmpfile="$(mktemp)"

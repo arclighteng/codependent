@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 
+# Source lib.sh once at file scope (not per-function)
+source "$PROJECT_ROOT/lib.sh"
+
 test_check_network_success() {
-    source "$PROJECT_ROOT/lib.sh"
-    # Mock curl to succeed
     curl() { return 0; }
     CFG_network_check_url="https://1.1.1.1"
-    local result
-    result=$(check_network)
-    assert_eq "0" "$?" 2>/dev/null || assert_eq "up" "$result"
+    local rc=0
+    check_network 2>/dev/null || rc=$?
+    assert_eq "0" "$rc" "check_network should return 0 when curl succeeds"
     unset -f curl
 }
 
 test_check_network_failure() {
-    source "$PROJECT_ROOT/lib.sh"
     curl() { return 1; }
     CFG_network_check_url="https://1.1.1.1"
-    if check_network 2>/dev/null; then
-        assert_true "false" "should fail when curl fails"
-    else
-        assert_true "0" "correctly detected network down"
-    fi
+    local rc=0
+    check_network 2>/dev/null || rc=$?
+    assert_eq "1" "$rc" "check_network should return 1 when curl fails"
     unset -f curl
 }
 
 test_check_status_page_operational() {
-    source "$PROJECT_ROOT/lib.sh"
     curl() { echo '{"status":{"indicator":"none","description":"All Systems Operational"}}'; }
     local result
     result=$(check_status_page)
@@ -33,7 +30,6 @@ test_check_status_page_operational() {
 }
 
 test_check_status_page_major_outage() {
-    source "$PROJECT_ROOT/lib.sh"
     curl() { echo '{"status":{"indicator":"major","description":"Major System Outage"}}'; }
     local result
     result=$(check_status_page)
@@ -42,7 +38,6 @@ test_check_status_page_major_outage() {
 }
 
 test_check_status_page_curl_failure() {
-    source "$PROJECT_ROOT/lib.sh"
     curl() { return 1; }
     local result
     result=$(check_status_page 2>/dev/null)
@@ -50,29 +45,37 @@ test_check_status_page_curl_failure() {
     unset -f curl
 }
 
-test_classify_health_all_good() {
-    source "$PROJECT_ROOT/lib.sh"
+test_classify_health_healthy() {
     local result
     result=$(classify_health "up" "none")
     assert_eq "healthy" "$result"
 }
 
 test_classify_health_network_down() {
-    source "$PROJECT_ROOT/lib.sh"
     local result
     result=$(classify_health "down" "unknown")
     assert_eq "network_down" "$result"
 }
 
-test_classify_health_api_outage() {
-    source "$PROJECT_ROOT/lib.sh"
+test_classify_health_major_outage() {
     local result
     result=$(classify_health "up" "major")
     assert_eq "outage" "$result"
 }
 
+test_classify_health_critical_outage() {
+    local result
+    result=$(classify_health "up" "critical")
+    assert_eq "outage" "$result"
+}
+
+test_classify_health_unknown_treated_as_outage() {
+    local result
+    result=$(classify_health "up" "unknown")
+    assert_eq "outage" "$result"
+}
+
 test_classify_health_degraded() {
-    source "$PROJECT_ROOT/lib.sh"
     local result
     result=$(classify_health "up" "minor")
     assert_eq "degraded" "$result"

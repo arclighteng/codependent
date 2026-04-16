@@ -17,14 +17,32 @@ while [[ $# -gt 0 ]]; do
         --config)    CONFIG_FILE="$2"; shift 2 ;;
         stop)
             if [[ -f "$STATE_DIR/monitor.pid" ]]; then
-                kill "$(cat "$STATE_DIR/monitor.pid")" 2>/dev/null && echo "Monitor stopped." || echo "Monitor not running."
+                pid=$(cat "$STATE_DIR/monitor.pid")
+                if kill "$pid" 2>/dev/null; then
+                    # Wait up to 10s for graceful shutdown — `sleep` inside
+                    # the monitor blocks SIGTERM processing on some platforms
+                    # (notably Windows Git Bash), so give it time to drain
+                    # before escalating to SIGKILL.
+                    for _ in {1..50}; do
+                        kill -0 "$pid" 2>/dev/null || break
+                        sleep 0.2
+                    done
+                    if kill -0 "$pid" 2>/dev/null; then
+                        kill -KILL "$pid" 2>/dev/null || true
+                        echo "Monitor stopped (forced)."
+                    else
+                        echo "Monitor stopped."
+                    fi
+                else
+                    echo "Monitor not running."
+                fi
                 rm -f "$STATE_DIR/monitor.pid"
             else
                 echo "Monitor not running."
             fi
             exit 0
             ;;
-        *) shift ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 
@@ -33,7 +51,7 @@ detect_platform
 
 mkdir -p "$STATE_DIR"
 
-# Singleton check
+# Singleton check (atomic via noclobber)
 PID_FILE="$STATE_DIR/monitor.pid"
 if [[ -f "$PID_FILE" ]]; then
     existing_pid=$(cat "$PID_FILE")
@@ -41,10 +59,14 @@ if [[ -f "$PID_FILE" ]]; then
         echo "Monitor already running (PID $existing_pid)" >&2
         exit 1
     fi
+    rm -f "$PID_FILE"
 fi
 
-# Write PID
-echo $$ > "$PID_FILE"
+# Write PID atomically — prevents TOCTOU race with concurrent starts
+if ! ( set -o noclobber; echo $$ > "$PID_FILE" ) 2>/dev/null; then
+    echo "Monitor already running (lost PID race)" >&2
+    exit 1
+fi
 
 # Cleanup on exit
 cleanup() {
@@ -70,16 +92,8 @@ notify "Monitor started (PID $$, state=$DAEMON_STATE)" "$LOG_FILE"
 while true; do
     sleep "$CURRENT_INTERVAL"
 
-    # Heartbeat check — self-terminate if stale
-    if [[ -f "$STATE_DIR/monitor.heartbeat" ]]; then
-        hb_mtime=$(stat -c %Y "$STATE_DIR/monitor.heartbeat" 2>/dev/null || stat -f %m "$STATE_DIR/monitor.heartbeat" 2>/dev/null || echo 0)
-        now=$(date +%s)
-        age=$((now - hb_mtime))
-        if ((age > ${CFG_heartbeat_timeout:-600})); then
-            notify "Heartbeat stale (${age}s). Self-terminating." "$LOG_FILE"
-            exit 0
-        fi
-    fi
+    # No self-heartbeat — the daemon runs until explicitly stopped (monitor.sh stop)
+    # or killed. Liveness is checked via PID in show_status.
 
     # Health check
     network_status="up"
@@ -95,8 +109,12 @@ while true; do
     health=$(classify_health "$network_status" "$status_indicator")
 
     # Map health to sliding window value
-    check_val=0
-    [[ "$health" == "healthy" ]] && check_val=1
+    # Note: `[[ ]] && x=y` would trigger set -e on false; use explicit if
+    if [[ "$health" == "healthy" ]]; then
+        check_val=1
+    else
+        check_val=0
+    fi
 
     sliding_window_push "$check_val"
 
@@ -112,31 +130,41 @@ while true; do
                     # Find next available tier for the message
                     load_tiers
                     next_tier_msg="no tier available"
+                    next_tier_id=""
                     for tline in "${TIERS[@]}"; do
                         parse_tier_line "$tline"
                         [[ "$TIER_id" == "sidecar" ]] && continue
                         [[ "$TIER_id" == "0" ]] && continue
                         if check_tier_prerequisites 2>/dev/null; then
+                            next_tier_id="$TIER_id"
                             next_tier_msg="Tier $TIER_id ($TIER_tool)"
                             break
                         fi
                     done
 
-                    msg="Anthropic API down. Next available: $next_tier_msg. Run: fallback.sh $TIER_id"
+                    if [[ -n "$next_tier_id" ]]; then
+                        msg="Anthropic API down. Next available: $next_tier_msg. Run: fallback.sh $next_tier_id"
+                    else
+                        msg="Anthropic API down. No fallback tier available."
+                    fi
+
+                    # Write failover_ready BEFORE logging so observers that
+                    # react to the log entry find the state file in place.
+                    if [[ -n "$next_tier_id" ]]; then
+                        if [[ "${CFG_on_failure:-notify}" == "auto_failover" || "${CFG_on_failure:-notify}" == "both" ]]; then
+                            echo "$next_tier_id" > "$STATE_DIR/failover_ready"
+                        fi
+                    fi
+
                     notify "$msg" "$LOG_FILE"
                     notify_dispatch "$msg"
-
-                    # Write failover_ready if configured
-                    if [[ "${CFG_on_failure:-notify}" == "auto_failover" || "${CFG_on_failure:-notify}" == "both" ]]; then
-                        echo "$TIER_id" > "$STATE_DIR/failover_ready"
-                    fi
                 fi
             elif [[ "$health" == "degraded" ]]; then
                 DAEMON_STATE="DEGRADED"
                 DEGRADED_STARTED=$(date +%s)
                 CURRENT_INTERVAL="${CFG_check_interval:-30}"
                 notify "API degraded (status: $status_indicator). Monitoring." "$LOG_FILE"
-                notify_dispatch "Anthropic API degraded — rate limited. Monitoring."
+                notify_dispatch "$(build_degraded_message)"
             fi
             ;;
 
@@ -147,10 +175,11 @@ while true; do
                 notify "Degradation cleared. Resuming normal monitoring." "$LOG_FILE"
             elif [[ "$health" == "outage" || "$health" == "network_down" ]]; then
                 DAEMON_STATE="MONITORING_RECOVERY"
-                OUTAGE_STARTED=$(date '+%Y-%m-%dT%H:%M:%S')
+                # Use degradation start time so metrics capture the full impact window
+                OUTAGE_STARTED=$(date -d "@$DEGRADED_STARTED" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -r "$DEGRADED_STARTED" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')
                 CURRENT_INTERVAL="${CFG_check_interval:-30}"
                 notify "Degradation escalated to outage." "$LOG_FILE"
-                notify_dispatch "Anthropic API: degradation escalated to full outage."
+                notify_dispatch "Anthropic API: degradation escalated to full outage. Run: fallback.sh"
                 continue  # Skip backoff — already escalated
             else
                 # Still degraded — check if past threshold
@@ -160,7 +189,7 @@ while true; do
                     DAEMON_STATE="MONITORING_RECOVERY"
                     OUTAGE_STARTED=$(date '+%Y-%m-%dT%H:%M:%S')
                     notify "Sustained degradation (${degraded_duration}s). Escalating to failover." "$LOG_FILE"
-                    notify_dispatch "Anthropic API degraded for ${degraded_duration}s. Consider switching: fallback.sh 1"
+                    notify_dispatch "Anthropic API degraded for ${degraded_duration}s. Run: fallback.sh"
                     continue  # Skip backoff — already escalated
                 fi
                 # Exponential backoff
@@ -176,11 +205,25 @@ while true; do
                 CURRENT_INTERVAL="${CFG_check_interval:-30}"
                 recovered_at=$(date '+%Y-%m-%dT%H:%M:%S')
 
-                notify "Anthropic API recovered." "$LOG_FILE"
-                notify_dispatch "$(build_recovery_message)"
+                # Write state files BEFORE logging so observers that react to
+                # the "recovered" log entry see the state in its final shape.
+                case "${CFG_on_recovery:-notify}" in
+                    auto_switch|both)
+                        echo "0" > "$STATE_DIR/recovery_ready"
+                        ;;
+                esac
 
                 # Clean up failover_ready
                 rm -f "$STATE_DIR/failover_ready"
+
+                notify "Anthropic API recovered." "$LOG_FILE"
+
+                # Handle on_recovery notifications
+                case "${CFG_on_recovery:-notify}" in
+                    notify|both)
+                        notify_dispatch "$(build_recovery_message)"
+                        ;;
+                esac
 
                 # Log metrics
                 if [[ -n "$OUTAGE_STARTED" ]]; then

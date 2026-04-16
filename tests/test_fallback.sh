@@ -86,3 +86,146 @@ test_full_test_command() {
     assert_contains "$output" "system test"
     assert_contains "$output" "Config:"
 }
+
+# ── walk_tiers ──────────────────────────────────────────────────────────────────
+
+test_walk_tiers_picks_first_available() {
+    setup_fallback_env
+    source "$PROJECT_ROOT/fallback.sh"
+    load_config "$TEST_CONF"
+    load_tiers "$TEST_TIERS"
+    detect_platform
+
+    # Override exec and start_monitor to capture what would launch
+    exec() { echo "EXEC: $*"; }
+    start_monitor() { :; }
+    export STATE_DIR="$TEST_STATE_DIR"
+
+    local output
+    output=$(walk_tiers 2>&1)
+    assert_contains "$output" "Activating Tier 0"
+
+    unset -f exec start_monitor
+    teardown_fallback_env
+}
+
+test_walk_tiers_skips_unavailable() {
+    setup_fallback_env
+    # All tiers require a missing env var
+    cat > "$TEST_TIERS" <<'TIERS'
+0 | bash | echo tier0 | FAKE_MISSING_VAR_1 | command -v bash
+1 | bash | echo tier1 | FAKE_MISSING_VAR_2 | command -v bash
+TIERS
+
+    # Run in a subshell to capture exit code from walk_tiers' exit 1
+    local result=0
+    local output
+    output=$(bash -c "
+        source \"$PROJECT_ROOT/fallback.sh\"
+        load_config \"$TEST_CONF\"
+        load_tiers \"$TEST_TIERS\"
+        detect_platform
+        STATE_DIR=\"$TEST_STATE_DIR\"
+        walk_tiers
+    " 2>&1) || result=$?
+    assert_eq "1" "$result" "should exit 1 when all tiers exhausted"
+    assert_contains "$output" "All tiers exhausted"
+
+    teardown_fallback_env
+}
+
+test_walk_tiers_respects_start_tier() {
+    setup_fallback_env
+    cat > "$TEST_TIERS" <<'TIERS'
+0 | bash | echo tier0 |  | command -v bash
+1 | bash | echo tier1 |  | command -v bash
+TIERS
+    source "$PROJECT_ROOT/fallback.sh"
+    load_config "$TEST_CONF"
+    load_tiers "$TEST_TIERS"
+    detect_platform
+
+    exec() { echo "EXEC: $*"; }
+    start_monitor() { :; }
+    export STATE_DIR="$TEST_STATE_DIR"
+
+    local output
+    output=$(walk_tiers "1" 2>&1)
+    assert_contains "$output" "Activating Tier 1"
+
+    unset -f exec start_monitor
+    teardown_fallback_env
+}
+
+test_walk_tiers_reads_failover_ready() {
+    setup_fallback_env
+    cat > "$TEST_TIERS" <<'TIERS'
+0 | bash | echo tier0 |  | command -v bash
+1 | bash | echo tier1 |  | command -v bash
+TIERS
+    source "$PROJECT_ROOT/fallback.sh"
+    load_config "$TEST_CONF"
+    load_tiers "$TEST_TIERS"
+    detect_platform
+
+    exec() { echo "EXEC: $*"; }
+    start_monitor() { :; }
+    export STATE_DIR="$TEST_STATE_DIR"
+
+    # Write a failover_ready file pointing to tier 1
+    echo "1" > "$TEST_STATE_DIR/failover_ready"
+
+    local output
+    output=$(walk_tiers 2>&1)
+    assert_contains "$output" "Activating Tier 1"
+
+    unset -f exec start_monitor
+    teardown_fallback_env
+}
+
+test_walk_tiers_skips_sidecar() {
+    setup_fallback_env
+    cat > "$TEST_TIERS" <<'TIERS'
+sidecar | cursor | cursor . |  | command -v bash
+TIERS
+
+    local result=0
+    local output
+    output=$(bash -c "
+        source \"$PROJECT_ROOT/fallback.sh\"
+        load_config \"$TEST_CONF\"
+        load_tiers \"$TEST_TIERS\"
+        detect_platform
+        STATE_DIR=\"$TEST_STATE_DIR\"
+        walk_tiers
+    " 2>&1) || result=$?
+    assert_eq "1" "$result" "sidecar should be skipped, all tiers exhausted"
+
+    teardown_fallback_env
+}
+
+test_walk_tiers_reads_recovery_ready() {
+    setup_fallback_env
+    cat > "$TEST_TIERS" <<'TIERS'
+0 | bash | echo tier0 |  | command -v bash
+1 | bash | echo tier1 |  | command -v bash
+TIERS
+    source "$PROJECT_ROOT/fallback.sh"
+    load_config "$TEST_CONF"
+    load_tiers "$TEST_TIERS"
+    detect_platform
+
+    exec() { echo "EXEC: $*"; }
+    start_monitor() { :; }
+    export STATE_DIR="$TEST_STATE_DIR"
+
+    # Write a recovery_ready file pointing to tier 0
+    echo "0" > "$TEST_STATE_DIR/recovery_ready"
+
+    local output
+    output=$(walk_tiers 2>&1)
+    assert_contains "$output" "Activating Tier 0"
+
+    unset -f exec start_monitor
+    teardown_fallback_env
+}

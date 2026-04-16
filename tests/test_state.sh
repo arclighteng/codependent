@@ -65,6 +65,18 @@ test_sliding_window_failure_detection() {
     assert_true "$(sliding_window_check_failure 4)" "4 consecutive failures = outage"
 }
 
+test_sliding_window_push_without_init_fails() {
+    source "$PROJECT_ROOT/lib.sh"
+    # Reset globals to simulate uninitialized state
+    SW_SIZE=0
+    SW_INDEX=0
+    SW_TOTAL_PUSHED=0
+    SW_WINDOW=()
+    local result=0
+    sliding_window_push 1 2>/dev/null || result=$?
+    assert_eq "1" "$result" "push without init should return 1"
+}
+
 test_sliding_window_failure_reset_on_success() {
     source "$PROJECT_ROOT/lib.sh"
     sliding_window_init 12
