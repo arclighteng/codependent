@@ -414,6 +414,97 @@ build_recovery_message() {
     echo "Anthropic API recovered — stable. Switch back with: fallback.sh 0"
 }
 
+# --- Metrics ---
+
+log_metrics() {
+    local started_at="$1"
+    local recovered_at="${2:-}"
+    local duration_minutes="${3:-}"
+    local failure_type="$4"
+    local tier_used="$5"
+    local tool_used="$6"
+    local auto_recovered="${7:-false}"
+    local platform="${8:-$PLATFORM}"
+    local state_dir="${9:-$CODEPENDENT_ROOT/state}"
+
+    mkdir -p "$state_dir"
+
+    # Escape single quotes for SQL safety
+    started_at="${started_at//\'/\'\'}"
+    recovered_at="${recovered_at//\'/\'\'}"
+    failure_type="${failure_type//\'/\'\'}"
+    tier_used="${tier_used//\'/\'\'}"
+    tool_used="${tool_used//\'/\'\'}"
+    platform="${platform//\'/\'\'}"
+
+    # Try sqlite3 first
+    if command -v sqlite3 &>/dev/null && [[ -n "${CFG_log_to_metrics:-true}" ]]; then
+        local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
+
+        # Import any pending CSV rows first
+        import_csv_to_db "$state_dir"
+
+        sqlite3 "$db" <<SQL 2>/dev/null && return 0
+CREATE TABLE IF NOT EXISTS outage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    recovered_at TEXT,
+    duration_minutes REAL,
+    failure_type TEXT NOT NULL,
+    tier_used TEXT NOT NULL,
+    tool_used TEXT NOT NULL,
+    auto_recovered BOOLEAN DEFAULT FALSE,
+    platform TEXT NOT NULL
+);
+INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform)
+VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');
+SQL
+    fi
+
+    # CSV fallback
+    local csv="$state_dir/metrics.csv"
+    if [[ ! -f "$csv" ]]; then
+        echo "started_at,recovered_at,duration_minutes,failure_type,tier_used,tool_used,auto_recovered,platform" > "$csv"
+    fi
+    echo "$started_at,$recovered_at,$duration_minutes,$failure_type,$tier_used,$tool_used,$auto_recovered,$platform" >> "$csv"
+}
+
+import_csv_to_db() {
+    local state_dir="${1:-$CODEPENDENT_ROOT/state}"
+    local csv="$state_dir/metrics.csv"
+
+    [[ -f "$csv" ]] || return 0
+    command -v sqlite3 &>/dev/null || return 0
+
+    local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
+    # Skip header line, import each row
+    tail -n +2 "$csv" | while IFS=, read -r started_at recovered_at duration_minutes failure_type tier_used tool_used auto_recovered platform; do
+        sqlite3 "$db" "INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');" 2>/dev/null
+    done
+
+    # Clear CSV after successful import
+    rm -f "$csv"
+}
+
+# --- Log Rotation ---
+
+rotate_log() {
+    local log_file="$1"
+    local max_size="${2:-${CFG_max_log_size:-1048576}}"
+
+    [[ -f "$log_file" ]] || return 0
+
+    local size
+    size=$(wc -c < "$log_file" 2>/dev/null || echo 0)
+
+    if ((size > max_size)); then
+        # Safe rotation: write-new-then-rename
+        touch "${log_file}.tmp"
+        mv "$log_file" "${log_file}.1" 2>/dev/null || true
+        mv "${log_file}.tmp" "$log_file" 2>/dev/null || true
+    fi
+}
+
 # --- Stubs (implemented in later tasks) ---
 start_monitor() { :; }
 stop_monitor() { :; }
