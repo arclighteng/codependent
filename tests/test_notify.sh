@@ -116,12 +116,15 @@ test_parse_notify_channels_single() {
 }
 
 test_parse_notify_channels_comma_list() {
-    local out
-    out=$(parse_notify_channels "terminal,slack,webhook")
-    # Output is newline-delimited
-    assert_contains "$out" "terminal"
-    assert_contains "$out" "slack"
-    assert_contains "$out" "webhook"
+    local output
+    output=$(parse_notify_channels "terminal,toast,slack")
+    local line1 line2 line3
+    line1=$(echo "$output" | sed -n '1p')
+    line2=$(echo "$output" | sed -n '2p')
+    line3=$(echo "$output" | sed -n '3p')
+    assert_eq "terminal" "$line1" "first channel should be terminal"
+    assert_eq "toast"    "$line2" "second channel should be toast"
+    assert_eq "slack"    "$line3" "third channel should be slack"
 }
 
 test_parse_notify_channels_both_backcompat() {
@@ -132,14 +135,9 @@ test_parse_notify_channels_both_backcompat() {
 }
 
 test_parse_notify_channels_trims_whitespace() {
-    local out
-    out=$(parse_notify_channels " terminal , slack ")
-    assert_contains "$out" "terminal"
-    assert_contains "$out" "slack"
-    # Must NOT contain spaces
-    if [[ "$out" == *" "* ]]; then
-        assert_eq "no_spaces" "has_spaces" "whitespace must be trimmed"
-    fi
+    local output
+    output=$(parse_notify_channels " terminal , toast ")
+    assert_eq "$(printf 'terminal\ntoast')" "$output" "whitespace should be trimmed"
 }
 
 test_parse_notify_channels_empty() {
