@@ -296,6 +296,49 @@ sliding_window_check_failure() {
     echo "true"
 }
 
+# --- Health Checks ---
+
+check_network() {
+    if curl -sf --max-time 5 "${CFG_network_check_url:-https://1.1.1.1}" > /dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+check_status_page() {
+    local response
+    if ! response=$(curl -sf --max-time 10 "https://status.anthropic.com/api/v2/status.json" 2>/dev/null); then
+        echo "unknown"
+        return
+    fi
+    # Extract indicator without jq — parse "indicator":"value"
+    local indicator
+    indicator=$(echo "$response" | grep -o '"indicator":"[^"]*"' | head -1 | sed 's/^"indicator":"//; s/"$//')
+    if [[ -n "$indicator" ]]; then
+        echo "$indicator"
+    else
+        echo "unknown"
+    fi
+}
+
+classify_health() {
+    local network="$1"    # up | down
+    local indicator="$2"  # none | minor | major | critical | unknown
+
+    if [[ "$network" == "down" ]]; then
+        echo "network_down"
+        return
+    fi
+
+    case "$indicator" in
+        none)              echo "healthy" ;;
+        minor)             echo "degraded" ;;
+        major|critical)    echo "outage" ;;
+        *)                 echo "outage" ;;  # unknown = assume outage
+    esac
+}
+
 # --- Stubs (implemented in later tasks) ---
 start_monitor() { :; }
 stop_monitor() { :; }
