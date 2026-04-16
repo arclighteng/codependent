@@ -242,3 +242,65 @@ test_notify_webhook_curl_fail_nonfatal() {
     assert_eq "0" "$rc" "webhook failures must never crash caller"
     _mock_curl_teardown
 }
+
+test_notify_dispatch_multi_channel() {
+    _mock_curl_setup
+    local test_log; test_log=$(mktemp)
+
+    # Use the notify_method list — the channel selector itself proves toast
+    # isn't called (no mocking of notify_toast needed).
+    CFG_notify_method="terminal,slack"
+    CFG_notify_slack_url="https://example.slack"
+    notify_dispatch "test message" "$test_log" "info" "startup"
+
+    # Log always written
+    assert_contains "$(cat "$test_log")" "test message"
+    # Slack channel must have been called
+    local payload
+    payload=$(cat "${_CURL_LOG}.payload" 2>/dev/null || echo "")
+    assert_contains "$payload" "test message"
+
+    rm -f "$test_log"
+    _mock_curl_teardown
+}
+
+test_notify_dispatch_backcompat_two_arg() {
+    # Existing callers pass notify_dispatch "msg" "$log_file" — must keep working.
+    local test_log; test_log=$(mktemp)
+    CFG_notify_method="terminal"
+    local rc=0
+    notify_dispatch "legacy message" "$test_log" 2>/dev/null || rc=$?
+    assert_eq "0" "$rc" "2-arg form must keep working"
+    assert_contains "$(cat "$test_log")" "legacy message"
+    rm -f "$test_log"
+}
+
+test_notify_dispatch_backcompat_single_arg() {
+    CFG_notify_method="terminal"
+    local rc=0
+    notify_dispatch "legacy message" 2>/dev/null || rc=$?
+    assert_eq "0" "$rc" "single-arg form must keep working"
+}
+
+test_notify_dispatch_unknown_channel_warns() {
+    _mock_curl_setup
+    local test_log; test_log=$(mktemp)
+    CFG_notify_method="terminal,bogus"
+    local out
+    out=$(notify_dispatch "msg" "$test_log" "info" "startup" 2>&1)
+    assert_contains "$out" "bogus"
+    rm -f "$test_log"
+    _mock_curl_teardown
+}
+
+test_notify_dispatch_empty_url_skips() {
+    _mock_curl_setup
+    local test_log; test_log=$(mktemp)
+    CFG_notify_method="slack"
+    CFG_notify_slack_url=""
+    local out
+    out=$(notify_dispatch "msg" "$test_log" "info" "startup" 2>&1)
+    assert_contains "$out" "empty"
+    rm -f "$test_log"
+    _mock_curl_teardown
+}

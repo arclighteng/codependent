@@ -526,18 +526,44 @@ parse_notify_channels() {
     done
 }
 
+# notify_dispatch MESSAGE [LOG_FILE] [LEVEL] [EVENT]
+# Logs the message and emits it on every channel listed in CFG_notify_method.
+# Arg 2 stays as LOG_FILE for backward compatibility with existing 2-arg
+# callers. LEVEL defaults to "info", EVENT defaults to "api_event".
 notify_dispatch() {
     local message="$1"
     local log_file="${2:-$CODEPENDENT_ROOT/state/monitor.log}"
+    local level="${3:-info}"
+    local event="${4:-api_event}"
 
     # Always log
     notify "$message" "$log_file"
 
-    case "${CFG_notify_method:-both}" in
-        toast)    notify_toast "$message" ;;
-        terminal) notify_terminal ;;
-        both)     notify_toast "$message"; notify_terminal ;;
-    esac
+    local channel
+    while IFS= read -r channel; do
+        [[ -z "$channel" ]] && continue
+        case "$channel" in
+            terminal) notify_terminal ;;
+            toast)    notify_toast "$message" ;;
+            slack)
+                if [[ -z "${CFG_notify_slack_url:-}" ]]; then
+                    echo "notify_dispatch: notify_slack_url is empty — skipping slack channel" >&2
+                else
+                    notify_slack "$CFG_notify_slack_url" "$level" "$message"
+                fi
+                ;;
+            webhook)
+                if [[ -z "${CFG_notify_webhook_url:-}" ]]; then
+                    echo "notify_dispatch: notify_webhook_url is empty — skipping webhook channel" >&2
+                else
+                    notify_webhook "$CFG_notify_webhook_url" "$level" "$event" "$message"
+                fi
+                ;;
+            *)
+                echo "notify_dispatch: unknown channel '$channel' — skipping" >&2
+                ;;
+        esac
+    done < <(parse_notify_channels "${CFG_notify_method:-both}")
 }
 
 build_outage_message() {
