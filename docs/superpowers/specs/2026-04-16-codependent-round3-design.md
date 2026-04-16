@@ -109,11 +109,13 @@ notify_webhook_url=
 **Wire format — Slack:**
 
 ```json
-{"text": "codependent: <message>"}
+{"text": "codependent [<level>]: <message>"}
 ```
 
 Plain `text` only — no Block Kit, no attachments. Keeps the payload small and
-avoids Slack API schema churn.
+avoids Slack API schema churn. `<level>` is prefixed (e.g. `[critical]`,
+`[warning]`, `[info]`) so on-call can triage severity at a glance without
+parsing the message body.
 
 **Wire format — generic webhook:**
 
@@ -158,12 +160,15 @@ next_check_interval base failures
 Returns the next `sleep` interval in seconds. Algorithm:
 
 ```
-raw    = base * 2^failures               (failures capped so raw ≤ 300)
+raw    = min(300, base * 2^failures)      # clamp growth BEFORE jitter
 jitter = random integer in [-raw/10, +raw/10]
 out    = max(base, min(300, raw + jitter))
 ```
 
-`$RANDOM` is the jitter source. Cap is hardcoded at 300s.
+`$RANDOM` is the jitter source. Cap is hardcoded at 300s. If `base > 300`
+(misconfiguration), `raw` still clamps to 300, and the final `max(base, ...)`
+collapses to `base` — i.e. the daemon respects the user's configured floor even
+when it exceeds the cap.
 
 **Where it's used in `monitor.sh`:**
 
@@ -203,6 +208,11 @@ return non-fatal     sqlite3 metrics.db < schema.sql
                                         (one line per metric, CSV)
 ```
 
+**Non-recursive retry:** The retry INSERT after recreation uses a plain
+`sqlite3 exec` path that does **not** re-enter the integrity-check + recreate
+flow. This prevents a pathological loop if the fresh DB itself is unwritable
+(full disk, read-only FS) — the CSV fallback is the terminal branch.
+
 **Schema recreation:** An `init_metrics_db` function (already partly present in
 `lib.sh` for fresh installs) is extracted so the recovery path can reuse it.
 
@@ -237,6 +247,12 @@ trap 'reload_config' HUP
    `"Config reloaded"`, emit `config_reloaded` metric
 4. If validation **fails**: log warning with specific error, keep old config,
    emit `warning` notification `"Config reload failed: <reason>. Keeping prior config."`
+
+**Validator extraction prerequisite:** The validation logic is currently inline
+in `load_config`. The implementation plan must factor it into a reusable
+`validate_config` function (operating on a variable prefix) that both
+`load_config` and `reload_config` can call. This is a small refactor, not a
+behavior change.
 
 Reload is a no-op for changes that require daemon restart to take effect
 (`check_interval` changes mid-sleep don't interrupt the current sleep; the new
@@ -340,7 +356,7 @@ codependent — fallback history
 Summary (last 20 events, since: all time):
   failovers:  4
   recoveries: 4
-  uptime:     98.2%  (over 12d 4h)
+  uptime:     98.2%  (since first recorded event, 12d 4h ago)
 
 TIMESTAMP             EVENT           STATE                  DETAIL
 2026-04-16T18:42:01Z  api_down        MONITORING_RECOVERY    tier=1
@@ -349,6 +365,11 @@ TIMESTAMP             EVENT           STATE                  DETAIL
 ```
 
 Rendered with `column -t` for alignment. No colors (keeps it pipe-safe).
+
+**Uptime computation:** `uptime = (total_monitored_seconds - outage_seconds) / total_monitored_seconds`
+where `total_monitored_seconds` is `now - first_event_timestamp` and
+`outage_seconds` is the sum of `api_recovered.timestamp - api_down.timestamp`
+pairs. If the DB has fewer than two events, print `uptime: n/a (insufficient data)`.
 
 **Graceful degradation:**
 
@@ -431,14 +452,15 @@ None blocking. Minor ones to revisit during implementation:
 **Modified:**
 
 - `lib.sh` — add `notify_slack`, `notify_webhook`, `next_check_interval`,
-  `reload_config`, `init_metrics_db` (extracted); extend `notify_dispatch`,
-  `log_metrics`, `log_metrics` failure path
+  `reload_config`, `validate_config` (extracted), `init_metrics_db`
+  (extracted); extend `notify_dispatch`, `log_metrics` failure path
 - `monitor.sh` — `trap HUP`, `reload` subcommand, use `next_check_interval`,
   `consecutive_network_failures` counter
 - `fallback.sh` — add `history` subcommand + arg parser
 - `resilience.conf` — add `notify_slack_url`, `notify_webhook_url`, update
   `notify_method` comment
 - `README.md` — one-paragraph callout of new features + link to new docs
+- `tests/test_notify.sh` — add multi-channel / Slack / webhook cases
 
 **Added:**
 
@@ -449,7 +471,6 @@ None blocking. Minor ones to revisit during implementation:
 - `tests/test_db_recovery.sh`
 - `tests/test_reload.sh`
 - `tests/test_history.sh`
-- `tests/test_notify.sh` additions (file exists)
 
 **Unchanged:** `generate-configs.sh`, `tiers.conf`, `guardrails.md`,
 `tools/`, `state/`.
