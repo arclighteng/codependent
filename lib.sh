@@ -448,6 +448,26 @@ build_degraded_message() {
 
 # --- Metrics ---
 
+# init_metrics_db [db_path]
+# Creates the outage_events schema. Idempotent.
+init_metrics_db() {
+    local db="${1:-${CODEPENDENT_DB:-$HOME/.claude/csuite.db}}"
+    command -v sqlite3 &>/dev/null || return 1
+    sqlite3 "$db" <<'SQL' 2>/dev/null
+CREATE TABLE IF NOT EXISTS outage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    recovered_at TEXT,
+    duration_minutes REAL,
+    failure_type TEXT NOT NULL,
+    tier_used TEXT NOT NULL,
+    tool_used TEXT NOT NULL,
+    auto_recovered BOOLEAN DEFAULT FALSE,
+    platform TEXT NOT NULL
+);
+SQL
+}
+
 log_metrics() {
     local started_at="$1"
     local recovered_at="${2:-}"
@@ -472,22 +492,9 @@ log_metrics() {
     # Try sqlite3 first
     if command -v sqlite3 &>/dev/null && [[ "${CFG_log_to_metrics:-true}" == "true" ]]; then
         local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
-
-        if sqlite3 "$db" <<SQL 2>/dev/null
-CREATE TABLE IF NOT EXISTS outage_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    started_at TEXT NOT NULL,
-    recovered_at TEXT,
-    duration_minutes REAL,
-    failure_type TEXT NOT NULL,
-    tier_used TEXT NOT NULL,
-    tool_used TEXT NOT NULL,
-    auto_recovered BOOLEAN DEFAULT FALSE,
-    platform TEXT NOT NULL
-);
-INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform)
-VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');
-SQL
+        init_metrics_db "$db" || true
+        if sqlite3 "$db" \
+            "INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');" 2>/dev/null
         then
             # Current row succeeded — now drain any pending CSV rows
             import_csv_to_db "$state_dir"

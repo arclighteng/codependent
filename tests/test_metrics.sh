@@ -129,3 +129,30 @@ test_date_to_epoch_fallback_returns_zero() {
     assert_eq "0" "$result" "date_to_epoch should return 0 when both date variants fail"
     unset -f date
 }
+
+test_init_metrics_db_creates_table() {
+    local tmpdb
+    tmpdb=$(mktemp)
+    rm -f "$tmpdb"
+
+    init_metrics_db "$tmpdb"
+
+    # Schema should include outage_events table
+    local tables
+    tables=$(sqlite3 "$tmpdb" ".tables" 2>/dev/null)
+    assert_contains "$tables" "outage_events"
+
+    rm -f "$tmpdb"
+}
+
+test_init_metrics_db_idempotent() {
+    local tmpdb
+    tmpdb=$(mktemp)
+    rm -f "$tmpdb"
+
+    init_metrics_db "$tmpdb"
+    init_metrics_db "$tmpdb"  # second call must not fail
+
+    assert_eq "0" "$?" "init_metrics_db must be idempotent"
+    rm -f "$tmpdb"
+}
