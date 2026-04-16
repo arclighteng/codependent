@@ -339,6 +339,81 @@ classify_health() {
     esac
 }
 
+# --- Notifications ---
+
+notify() {
+    local message="$1"
+    local log_file="${2:-$CODEPENDENT_ROOT/state/monitor.log}"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    mkdir -p "$(dirname "$log_file")"
+    echo "[$timestamp] $message" >> "$log_file"
+}
+
+notify_toast() {
+    local message="$1"
+    local title="${2:-codependent}"
+
+    case "${PLATFORM:-}" in
+        macos)
+            osascript -e "display notification \"$message\" with title \"$title\"" 2>/dev/null || true
+            ;;
+        windows-git-bash|windows-wsl)
+            # Try native Windows notifications via PowerShell
+            if powershell.exe -NoProfile -Command "
+                Add-Type -AssemblyName System.Windows.Forms
+                \$n = New-Object System.Windows.Forms.NotifyIcon
+                \$n.Icon = [System.Drawing.SystemIcons]::Information
+                \$n.Visible = \$true
+                \$n.ShowBalloonTip(5000, '$title', '$message', 'Info')
+                Start-Sleep -Seconds 1
+                \$n.Dispose()
+            " 2>/dev/null; then
+                return 0
+            fi
+            # Fallback: BurntToast
+            if powershell.exe -NoProfile -Command "
+                Import-Module BurntToast 2>\$null
+                if (\$?) { New-BurntToastNotification -Text '$title','$message' }
+                else { exit 1 }
+            " 2>/dev/null; then
+                return 0
+            fi
+            # Final fallback: bell
+            notify_terminal
+            ;;
+        *)
+            notify_terminal
+            ;;
+    esac
+}
+
+notify_terminal() {
+    printf '\a' 2>/dev/null || true
+}
+
+notify_dispatch() {
+    local message="$1"
+    local log_file="${2:-$CODEPENDENT_ROOT/state/monitor.log}"
+
+    # Always log
+    notify "$message" "$log_file"
+
+    case "${CFG_notify_method:-both}" in
+        toast)    notify_toast "$message" ;;
+        terminal) notify_terminal ;;
+        both)     notify_toast "$message"; notify_terminal ;;
+    esac
+}
+
+build_outage_message() {
+    echo "Anthropic API down. Next available: Tier ${TIER_id} (${TIER_tool}). Run: fallback.sh ${TIER_id}"
+}
+
+build_recovery_message() {
+    echo "Anthropic API recovered — stable. Switch back with: fallback.sh 0"
+}
+
 # --- Stubs (implemented in later tasks) ---
 start_monitor() { :; }
 stop_monitor() { :; }
