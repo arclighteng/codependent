@@ -108,3 +108,42 @@ test_notify_dispatch_both() {
     unset -f notify_toast
     rm -f "$test_log"
 }
+
+test_parse_notify_channels_single() {
+    local out
+    out=$(parse_notify_channels "terminal")
+    assert_eq "terminal" "$out" "single channel returns itself"
+}
+
+test_parse_notify_channels_comma_list() {
+    local out
+    out=$(parse_notify_channels "terminal,slack,webhook")
+    # Output is newline-delimited
+    assert_contains "$out" "terminal"
+    assert_contains "$out" "slack"
+    assert_contains "$out" "webhook"
+}
+
+test_parse_notify_channels_both_backcompat() {
+    local out
+    out=$(parse_notify_channels "both")
+    assert_contains "$out" "terminal"
+    assert_contains "$out" "toast"
+}
+
+test_parse_notify_channels_trims_whitespace() {
+    local out
+    out=$(parse_notify_channels " terminal , slack ")
+    assert_contains "$out" "terminal"
+    assert_contains "$out" "slack"
+    # Must NOT contain spaces
+    if [[ "$out" == *" "* ]]; then
+        assert_eq "no_spaces" "has_spaces" "whitespace must be trimmed"
+    fi
+}
+
+test_parse_notify_channels_empty() {
+    local out
+    out=$(parse_notify_channels "")
+    assert_eq "" "$out" "empty input returns empty"
+}

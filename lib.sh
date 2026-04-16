@@ -420,6 +420,29 @@ notify_terminal() {
     printf '\a' 2>/dev/null || true
 }
 
+# parse_notify_channels "comma,separated,list"
+# Emits newline-delimited, trimmed channel names.
+# Back-compat: "both" expands to "terminal\ntoast".
+parse_notify_channels() {
+    local raw="$1"
+    [[ -z "$raw" ]] && return 0
+
+    local IFS=','
+    local ch trimmed
+    for ch in $raw; do
+        # Trim leading/trailing whitespace
+        trimmed="${ch#"${ch%%[![:space:]]*}"}"
+        trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+        [[ -z "$trimmed" ]] && continue
+        if [[ "$trimmed" == "both" ]]; then
+            echo "terminal"
+            echo "toast"
+        else
+            echo "$trimmed"
+        fi
+    done
+}
+
 notify_dispatch() {
     local message="$1"
     local log_file="${2:-$CODEPENDENT_ROOT/state/monitor.log}"
