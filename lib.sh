@@ -576,6 +576,44 @@ rotate_log() {
     fi
 }
 
+# --- Adaptive Backoff ---
+
+# next_check_interval BASE FAILURES
+# Prints a sleep interval in seconds using jittered exponential growth.
+#   raw    = min(300, base * 2^failures)
+#   jitter = random int in [-raw/10, +raw/10]
+#   out    = max(base, min(300, raw + jitter))
+# If base > 300 the floor wins: out = base.
+next_check_interval() {
+    local base="$1"
+    local failures="$2"
+    local raw=$base
+    local cap=300
+
+    # Exponential growth, clamped BEFORE jitter
+    local i
+    for ((i = 0; i < failures; i++)); do
+        raw=$((raw * 2))
+        if ((raw >= cap)); then
+            raw=$cap
+            break
+        fi
+    done
+
+    # Jitter window: ±10% of raw. Use $RANDOM (0..32767) mod (2*window+1) − window.
+    local window=$((raw / 10))
+    local jitter=0
+    if ((window > 0)); then
+        jitter=$((RANDOM % (2 * window + 1) - window))
+    fi
+
+    local out=$((raw + jitter))
+    # Clamp to [base, cap]
+    if ((out > cap)); then out=$cap; fi
+    if ((out < base)); then out=$base; fi
+    echo "$out"
+}
+
 # --- Monitor Lifecycle ---
 
 start_monitor() {
