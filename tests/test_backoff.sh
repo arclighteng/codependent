@@ -4,21 +4,26 @@
 source "$PROJECT_ROOT/lib.sh"
 
 test_backoff_floor() {
-    # 0 failures → base (no growth), jittered to within ±10%
+    # 0 failures → base floor absorbs negative jitter, so range is [base, base + 10%].
+    # Upper bound is +jitter (base + raw/10 = 33). Lower bound is exactly base (30).
     local val
     val=$(next_check_interval 30 0)
-    if (( val < 27 || val > 33 )); then
-        assert_eq "27..33" "$val" "0-failure result should equal base ±10%"
+    if (( val < 30 || val > 33 )); then
+        assert_eq "30..33" "$val" "0-failure result should be base (floor clamped) or above"
     fi
 }
 
 test_backoff_grows() {
-    # Monotonic growth (before cap) across failure counts
+    # Monotonic growth (before cap) across failure counts.
+    # Parameter choices below guarantee non-overlapping jitter windows, so the
+    # comparison is deterministic despite live $RANDOM:
+    #   failures=0 → raw=10, jitter disabled (window=1 but floor clamps): [10,11]
+    #   failures=2 → raw=40, jitter±4: [36,44]
+    #   failures=3 → raw=80, jitter±8: [72,88]
     local v0 v1 v2
     v0=$(next_check_interval 10 0)
-    v1=$(next_check_interval 10 2)   # base * 4 = 40
-    v2=$(next_check_interval 10 3)   # base * 8 = 80
-    # Allow jitter, so check bounds
+    v1=$(next_check_interval 10 2)
+    v2=$(next_check_interval 10 3)
     if (( v1 < v0 )); then
         assert_eq "grows" "shrinks" "expected v1 >= v0"
     fi

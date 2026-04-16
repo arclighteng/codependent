@@ -584,6 +584,7 @@ rotate_log() {
 #   jitter = random int in [-raw/10, +raw/10]
 #   out    = max(base, min(300, raw + jitter))
 # If base > 300 the floor wins: out = base.
+# Precondition: BASE and FAILURES must be non-negative integers (trusted caller).
 next_check_interval() {
     local base="$1"
     local failures="$2"
