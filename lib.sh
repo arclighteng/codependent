@@ -505,6 +505,38 @@ rotate_log() {
     fi
 }
 
-# --- Stubs (implemented in later tasks) ---
-start_monitor() { :; }
-stop_monitor() { :; }
+# --- Monitor Lifecycle ---
+
+start_monitor() {
+    local state_dir="${1:-$CODEPENDENT_ROOT/state}"
+    local config="${2:-$CODEPENDENT_ROOT/resilience.conf}"
+    local pid_file="$state_dir/monitor.pid"
+
+    # Check if already running
+    if [[ -f "$pid_file" ]]; then
+        local existing_pid
+        existing_pid=$(cat "$pid_file")
+        if kill -0 "$existing_pid" 2>/dev/null; then
+            # Already running, just touch heartbeat
+            touch "$state_dir/monitor.heartbeat"
+            return 0
+        fi
+    fi
+
+    # Launch in background
+    nohup bash "$CODEPENDENT_ROOT/monitor.sh" --state-dir "$state_dir" --config "$config" &>/dev/null &
+    disown
+    touch "$state_dir/monitor.heartbeat"
+}
+
+stop_monitor() {
+    local state_dir="${1:-$CODEPENDENT_ROOT/state}"
+    local pid_file="$state_dir/monitor.pid"
+
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file")
+        kill "$pid" 2>/dev/null || true
+        rm -f "$pid_file"
+    fi
+}
