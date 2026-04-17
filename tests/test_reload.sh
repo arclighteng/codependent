@@ -87,3 +87,46 @@ test_sighup_triggers_reload() {
     kill "$pid" 2>/dev/null || true
     rm -f "$conf" "$marker"
 }
+
+test_reload_subcommand_sends_sighup() {
+    local state_dir; state_dir=$(mktemp -d)
+    local conf; conf=$(_make_conf)
+
+    # Background process that traps HUP and sets a marker
+    local marker; marker=$(mktemp)
+    (
+        trap 'echo got-hup > "'"$marker"'"; exit 0' HUP
+        echo $BASHPID > "$state_dir/monitor.pid"
+        for _ in {1..40}; do sleep 0.2; done
+    ) &
+    local pid=$!
+
+    # Wait for the child to write its PID
+    for _ in {1..10}; do
+        [[ -f "$state_dir/monitor.pid" ]] && break
+        sleep 0.1
+    done
+
+    # Invoke reload subcommand
+    bash "$PROJECT_ROOT/monitor.sh" --state-dir "$state_dir" reload >/dev/null 2>&1 || true
+
+    # Wait for marker
+    for _ in {1..20}; do
+        [[ -s "$marker" ]] && break
+        sleep 0.2
+    done
+
+    assert_contains "$(cat "$marker" 2>/dev/null)" "got-hup"
+
+    kill "$pid" 2>/dev/null || true
+    rm -rf "$state_dir"
+    rm -f "$conf" "$marker"
+}
+
+test_reload_subcommand_exits_1_when_no_monitor() {
+    local state_dir; state_dir=$(mktemp -d)
+    local rc=0
+    bash "$PROJECT_ROOT/monitor.sh" --state-dir "$state_dir" reload >/dev/null 2>&1 || rc=$?
+    assert_eq "1" "$rc" "reload with no monitor running must exit 1"
+    rm -rf "$state_dir"
+}

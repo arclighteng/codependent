@@ -42,6 +42,19 @@ while [[ $# -gt 0 ]]; do
             fi
             exit 0
             ;;
+        reload)
+            if [[ -f "$STATE_DIR/monitor.pid" ]]; then
+                pid=$(cat "$STATE_DIR/monitor.pid")
+                if kill -0 "$pid" 2>/dev/null; then
+                    if kill -HUP "$pid" 2>/dev/null; then
+                        echo "SIGHUP sent to monitor (PID $pid)"
+                        exit 0
+                    fi
+                fi
+            fi
+            echo "monitor not running" >&2
+            exit 1
+            ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
