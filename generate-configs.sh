@@ -84,14 +84,14 @@ for root in "${roots[@]}"; do
     fi
 done
 
-# Deduplicate
+# Deduplicate (bash 3.2 compatible — no associative arrays)
 UNIQUE_PROJECTS=()
-declare -A seen_projects 2>/dev/null || true
 for p in "${PROJECTS[@]}"; do
-    if [[ -z "${seen_projects[$p]:-}" ]]; then
-        seen_projects[$p]=1
-        UNIQUE_PROJECTS+=("$p")
-    fi
+    _dup=false
+    for u in "${UNIQUE_PROJECTS[@]}"; do
+        [[ "$u" == "$p" ]] && { _dup=true; break; }
+    done
+    [[ "$_dup" == "false" ]] && UNIQUE_PROJECTS+=("$p")
 done
 PROJECTS=("${UNIQUE_PROJECTS[@]}")
 

@@ -73,20 +73,16 @@ load_config() {
 validate_config() {
   local errors=0
 
-  # Enum validations: field -> allowed pipe-separated values
-  local -A enum_fields=(
-    [health_check]="status_page|api_call|both"
-    [on_recovery]="notify|auto_switch|both"
-    [on_failure]="notify|auto_failover|both"
-  )
-
-  for field in "${!enum_fields[@]}"; do
+  # Enum validations (bash 3.2 compatible — no associative arrays)
+  local _enum_pairs="health_check=status_page|api_call|both on_recovery=notify|auto_switch|both on_failure=notify|auto_failover|both"
+  local _pair field allowed
+  for _pair in $_enum_pairs; do
+    field="${_pair%%=*}"
+    allowed="${_pair#*=}"
     local varname="CFG_${field}"
     local val="${!varname:-}"
 
     if [[ -n "$val" ]]; then
-      local allowed="${enum_fields[$field]}"
-      # Build a pattern to match exactly one of the allowed values
       if [[ ! "$val" =~ ^(${allowed})$ ]]; then
         echo "validate_config: invalid value for ${field}: '${val}' (allowed: ${allowed})" >&2
         (( errors++ )) || true
