@@ -70,6 +70,48 @@ show_status() {
     fi
 }
 
+show_history() {
+    local limit=20
+    local since=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --limit)
+                shift
+                if [[ ! "${1:-}" =~ ^[1-9][0-9]*$ ]] || (( ${1:-0} > 1000 )); then
+                    echo "history: --limit must be a positive integer (1..1000)" >&2
+                    exit 1
+                fi
+                limit="$1"; shift
+                ;;
+            --since)
+                shift
+                if [[ ! "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+                    echo "history: --since must match YYYY-MM-DD" >&2
+                    exit 1
+                fi
+                since="$1"; shift
+                ;;
+            *)
+                echo "history: unknown flag: $1" >&2
+                echo "usage: fallback.sh history [--limit N] [--since YYYY-MM-DD]" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    _render_history "$limit" "$since"
+}
+
+# Stub so parser tests pass; real rendering lands in the next task
+_render_history() {
+    local limit="$1"
+    local since="$2"
+    echo "codependent — fallback history"
+    echo ""
+    echo "(history rendering not yet implemented)"
+}
+
 dry_run_tiers() {
     local state_dir="${1:-${STATE_DIR:-$CODEPENDENT_ROOT/state}}"
     echo "codependent — dry run"
@@ -177,6 +219,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             ;;
         --test)
             run_tests
+            ;;
+        history)
+            shift
+            show_history "$@"
             ;;
         "")
             walk_tiers
