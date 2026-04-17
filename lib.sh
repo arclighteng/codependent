@@ -149,6 +149,40 @@ validate_config() {
   return 0
 }
 
+# ── reload_config ─────────────────────────────────────────────────────────────
+# Usage: reload_config [path]
+# Re-reads the config file and applies it if validation passes.
+# On failure, keeps the current CFG_* values untouched and logs a warning.
+reload_config() {
+    local config_file="${1:-$CODEPENDENT_ROOT/resilience.conf}"
+
+    # Snapshot current CFG_* vars so we can restore on validation failure
+    local -a snap_names=()
+    local -a snap_values=()
+    local v
+    for v in $(compgen -v CFG_); do
+        snap_names+=("$v")
+        snap_values+=("${!v}")
+    done
+
+    if ! load_config "$config_file" 2>/dev/null; then
+        echo "reload_config: failed to read $config_file — keeping current config" >&2
+        return 1
+    fi
+
+    if ! validate_config 2>/dev/null; then
+        # Restore snapshot
+        local i
+        for ((i = 0; i < ${#snap_names[@]}; i++)); do
+            printf -v "${snap_names[$i]}" '%s' "${snap_values[$i]}"
+        done
+        echo "reload_config: validation failed — reverted to prior config" >&2
+        return 1
+    fi
+
+    return 0
+}
+
 # ── parse_tier_line ───────────────────────────────────────────────────────────
 # Usage: parse_tier_line "<line>"
 # Parses one line from tiers.conf (delimited by " | ") and sets:
