@@ -53,3 +53,28 @@ test_recover_corrupted_db_renames_and_recreates() {
 
     rm -f "$db" "${db}.corrupted-"*
 }
+
+test_log_metrics_recovers_corrupt_db() {
+    local db
+    db=$(mktemp); rm -f "$db"
+    _setup_corrupt_db "$db"
+
+    local state_dir
+    state_dir=$(mktemp -d)
+
+    CODEPENDENT_DB="$db"
+    CFG_log_to_metrics="true"
+    export CODEPENDENT_DB CFG_log_to_metrics
+
+    # This should detect corruption, recover, and retry the insert
+    log_metrics "2026-04-16T12:00:00" "2026-04-16T12:05:00" "5" "outage" "1" "codex" "true" "linux" "$state_dir"
+
+    # After log_metrics, the DB should be valid and have the row
+    local count
+    count=$(sqlite3 "$db" "SELECT COUNT(*) FROM outage_events;" 2>/dev/null || echo "0")
+    assert_eq "1" "$count" "row should be present in recovered DB"
+
+    rm -rf "$state_dir"
+    rm -f "$db" "${db}.corrupted-"*
+    unset CODEPENDENT_DB
+}

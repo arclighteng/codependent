@@ -702,12 +702,22 @@ log_metrics() {
         # single sqlite3 session): the Task 8/9 recovery path will retry this
         # INSERT after renaming+recreating a corrupted DB, and the split makes
         # that retry trivial. If the INSERT fails, CSV fallback below catches it.
-        if sqlite3 "$db" \
-            "INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');" 2>/dev/null
-        then
+        local insert_sql="INSERT INTO outage_events (started_at, recovered_at, duration_minutes, failure_type, tier_used, tool_used, auto_recovered, platform) VALUES ('$started_at', '$recovered_at', '$duration_minutes', '$failure_type', '$tier_used', '$tool_used', '$auto_recovered', '$platform');"
+
+        if sqlite3 "$db" "$insert_sql" 2>/dev/null; then
             # Current row succeeded — now drain any pending CSV rows
             import_csv_to_db "$state_dir"
             return 0
+        fi
+
+        # INSERT failed — check for corruption, attempt recovery
+        if [[ "$(check_db_integrity "$db")" != "ok" ]]; then
+            if recover_corrupted_db "$db"; then
+                # Non-recursive retry — plain INSERT, no second recovery loop
+                if sqlite3 "$db" "$insert_sql" 2>/dev/null; then
+                    return 0
+                fi
+            fi
         fi
     fi
 
