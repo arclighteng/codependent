@@ -57,7 +57,11 @@ load_config() {
       # Trim trailing whitespace from value
       val="${val%"${val##*[![:space:]]}"}"
 
-      declare -g "CFG_${key}=${val}"
+      # export sets global scope even from inside functions on all bash
+      # versions. $key is validated by the regex above (only
+      # [A-Za-z_][A-Za-z0-9_]*). Config values are simple strings
+      # (numbers, URLs, comma lists) that never contain special chars.
+      export "CFG_${key}=${val}"
     fi
   done < "$config_file"
 }
@@ -174,7 +178,7 @@ reload_config() {
         # Restore snapshot
         local i
         for ((i = 0; i < ${#snap_names[@]}; i++)); do
-            printf -v "${snap_names[$i]}" '%s' "${snap_values[$i]}"
+            export "${snap_names[$i]}=${snap_values[$i]}"
         done
         echo "reload_config: validation failed — reverted to prior config" >&2
         return 1
