@@ -623,6 +623,50 @@ CREATE TABLE IF NOT EXISTS outage_events (
 SQL
 }
 
+# check_db_integrity [db_path]
+# Prints "ok" if PRAGMA integrity_check returns ok, otherwise prints "corrupted".
+# Returns 0 when ok, 1 when corrupted.
+check_db_integrity() {
+    local db="${1:-${CODEPENDENT_DB:-$HOME/.claude/csuite.db}}"
+    [[ -f "$db" ]] || { echo "ok"; return 0; }  # missing = will be recreated, not corrupt
+    command -v sqlite3 &>/dev/null || { echo "ok"; return 0; }  # can't check = assume ok
+
+    local result
+    result=$(sqlite3 "$db" 'PRAGMA integrity_check;' 2>/dev/null || echo "corrupted")
+    if [[ "$result" == "ok" ]]; then
+        echo "ok"
+        return 0
+    fi
+    echo "corrupted"
+    return 1
+}
+
+# recover_corrupted_db [db_path]
+# Renames the corrupted DB to <path>.corrupted-<epoch> and recreates the schema.
+# Fires a critical notification. Returns 0 on success, 1 if recreation also fails.
+recover_corrupted_db() {
+    local db="${1:-${CODEPENDENT_DB:-$HOME/.claude/csuite.db}}"
+    local ts
+    ts=$(date +%s)
+
+    if [[ -f "$db" ]]; then
+        mv "$db" "${db}.corrupted-${ts}" 2>/dev/null || true
+    fi
+
+    if ! init_metrics_db "$db"; then
+        echo "recover_corrupted_db: failed to recreate $db" >&2
+        return 1
+    fi
+
+    # Best-effort alert. notify_dispatch may not be configured in all contexts.
+    # Args: message, log_file (default), level, event
+    if declare -F notify_dispatch >/dev/null 2>&1; then
+        notify_dispatch "Metrics DB corrupted — recreated. Old file: ${db}.corrupted-${ts}" \
+            "" "critical" "db_corrupted" 2>/dev/null || true
+    fi
+    return 0
+}
+
 log_metrics() {
     local started_at="$1"
     local recovered_at="${2:-}"
