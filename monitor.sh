@@ -87,6 +87,18 @@ sliding_window_init "${CFG_recovery_window:-12}"
 
 notify "Monitor started (PID $$, state=$DAEMON_STATE)" "$LOG_FILE"
 
+# Hot config reload on SIGHUP.
+# Keep the handler short; reload_config restores on failure.
+_on_hup() {
+    # notify_dispatch args: message, log_file, level, event
+    if reload_config "$CONFIG_FILE"; then
+        notify_dispatch "Config reloaded" "$LOG_FILE" "info" "config_reloaded"
+    else
+        notify_dispatch "Config reload failed — keeping prior config" "$LOG_FILE" "warning" "config_reloaded"
+    fi
+}
+trap '_on_hup' HUP
+
 # --- Main Loop ---
 # IMPORTANT: No `local` keyword anywhere in this loop — local is only valid inside functions
 

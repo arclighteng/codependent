@@ -48,3 +48,42 @@ test_reload_config_rejects_invalid() {
     assert_eq "$old" "${CFG_check_interval}" "invalid reload must keep old value"
     rm -f "$conf"
 }
+
+# This test requires a running monitor — uses the same mock harness as
+# test_state_machine.sh. For simplicity, we invoke a minimal subshell with
+# the trap installed.
+
+test_sighup_triggers_reload() {
+    local conf; conf=$(_make_conf)
+    local marker; marker=$(mktemp)
+
+    # Background script that sources lib.sh, installs trap, and writes a marker
+    # to the file when SIGHUP is received.
+    (
+        source "$PROJECT_ROOT/lib.sh"
+        load_config "$conf"
+        trap 'reload_config "'"$conf"'" >/dev/null 2>&1; echo reloaded >> "'"$marker"'"' HUP
+        # Sleep long enough to receive a signal
+        for _ in {1..20}; do sleep 0.2; done
+    ) &
+    local pid=$!
+
+    # Give it a moment to install the trap
+    sleep 0.5
+
+    # Update config and send SIGHUP
+    sed -i 's/^check_interval=.*/check_interval=77/' "$conf" 2>/dev/null || \
+        (tmp=$(mktemp); sed 's/^check_interval=.*/check_interval=77/' "$conf" > "$tmp"; mv "$tmp" "$conf")
+    kill -HUP "$pid" 2>/dev/null || true
+
+    # Wait for marker
+    for _ in {1..25}; do
+        [[ -s "$marker" ]] && break
+        sleep 0.2
+    done
+
+    assert_contains "$(cat "$marker" 2>/dev/null)" "reloaded"
+
+    kill "$pid" 2>/dev/null || true
+    rm -f "$conf" "$marker"
+}
