@@ -103,13 +103,85 @@ show_history() {
     _render_history "$limit" "$since"
 }
 
-# Stub so parser tests pass; real rendering lands in the next task
 _render_history() {
+    # SECURITY NOTE: $since is interpolated into SQL strings below. The arg
+    # parser (show_history) rejects anything that doesn't match
+    # ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ so the only bytes that reach this function
+    # are ASCII digits and two hyphens. This regex is the full boundary; do
+    # not relax it without re-reviewing the SQL builders.
     local limit="$1"
     local since="$2"
+    local db="${CODEPENDENT_DB:-$HOME/.claude/csuite.db}"
+
     echo "codependent — fallback history"
     echo ""
-    echo "(history rendering not yet implemented)"
+
+    # Graceful degradation: missing sqlite3
+    if ! command -v sqlite3 &>/dev/null; then
+        echo "sqlite3 not found — install it to enable history."
+        return 0
+    fi
+
+    # Graceful degradation: missing or empty DB
+    if [[ ! -f "$db" ]]; then
+        echo "No history yet — daemon hasn't recorded any events."
+        return 0
+    fi
+
+    local total
+    total=$(sqlite3 "$db" "SELECT COUNT(*) FROM outage_events;" 2>/dev/null || echo 0)
+    if [[ "$total" == "0" || -z "$total" ]]; then
+        echo "No history yet — daemon hasn't recorded any events."
+        return 0
+    fi
+
+    # Summary
+    local where=""
+    [[ -n "$since" ]] && where="WHERE started_at >= '${since}T00:00:00'"
+
+    local failovers recoveries first_ts now_epoch first_epoch total_secs outage_secs uptime_pct
+    failovers=$(sqlite3 "$db" "SELECT COUNT(*) FROM outage_events $where;" 2>/dev/null || echo 0)
+    recoveries=$(sqlite3 "$db" "SELECT COUNT(*) FROM outage_events $where AND recovered_at IS NOT NULL AND recovered_at != '';" 2>/dev/null || echo 0)
+    # Strip "AND" prefix hack if $where was empty: recoveries query needs its own where
+    if [[ -z "$where" ]]; then
+        recoveries=$(sqlite3 "$db" "SELECT COUNT(*) FROM outage_events WHERE recovered_at IS NOT NULL AND recovered_at != '';" 2>/dev/null || echo 0)
+    fi
+
+    first_ts=$(sqlite3 "$db" "SELECT MIN(started_at) FROM outage_events $where;" 2>/dev/null || echo "")
+
+    # Uptime: 1 - (sum of outage_seconds / total_seconds). Needs ≥2 data points.
+    local uptime_str="n/a (insufficient data)"
+    if [[ -n "$first_ts" && "$total" -ge 2 ]]; then
+        first_epoch=$(date_to_epoch "$first_ts" 2>/dev/null || echo 0)
+        now_epoch=$(date +%s)
+        total_secs=$((now_epoch - first_epoch))
+        outage_secs=$(sqlite3 "$db" "SELECT COALESCE(SUM(duration_minutes * 60), 0) FROM outage_events $where AND recovered_at IS NOT NULL;" 2>/dev/null || echo 0)
+        if [[ -z "$where" ]]; then
+            outage_secs=$(sqlite3 "$db" "SELECT COALESCE(SUM(duration_minutes * 60), 0) FROM outage_events WHERE recovered_at IS NOT NULL;" 2>/dev/null || echo 0)
+        fi
+        if (( total_secs > 0 )); then
+            # Percentage with 1 decimal. Use awk for float math (bash has none).
+            uptime_str=$(awk -v o="$outage_secs" -v t="$total_secs" 'BEGIN { printf "%.1f%%", (1 - o/t) * 100 }')
+        fi
+    fi
+
+    local since_label="${since:-all time}"
+    echo "Summary (last $limit events, since: $since_label):"
+    printf "  failovers:  %s\n" "$failovers"
+    printf "  recoveries: %s\n" "$recoveries"
+    printf "  uptime:     %s\n" "$uptime_str"
+    echo ""
+
+    # Table
+    local header="STARTED|RECOVERED|DURATION|TYPE|TIER|PLATFORM"
+    local rows
+    if [[ -n "$since" ]]; then
+        rows=$(sqlite3 -separator '|' "$db" "SELECT started_at, COALESCE(recovered_at,'-'), COALESCE(printf('%.1fm', duration_minutes),'-'), failure_type, tier_used, platform FROM outage_events WHERE started_at >= '${since}T00:00:00' ORDER BY started_at DESC LIMIT $limit;" 2>/dev/null)
+    else
+        rows=$(sqlite3 -separator '|' "$db" "SELECT started_at, COALESCE(recovered_at,'-'), COALESCE(printf('%.1fm', duration_minutes),'-'), failure_type, tier_used, platform FROM outage_events ORDER BY started_at DESC LIMIT $limit;" 2>/dev/null)
+    fi
+
+    { echo "$header"; echo "$rows"; } | column -t -s '|'
 }
 
 dry_run_tiers() {
