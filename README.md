@@ -44,6 +44,24 @@ bash fallback.sh        # walks tiers, launches first available
 bash fallback.sh 2a     # jump directly to a specific tier
 ```
 
+## New in Round 3
+
+- **Multi-channel alerts** — `notify_method` is now a comma-separated list.
+  Channels: `terminal`, `toast`, `slack`, `webhook`, `both` (legacy). See
+  `resilience.conf` for the new `notify_slack_url` and `notify_webhook_url`
+  keys.
+- **Jittered exponential backoff** — `monitor.sh` adapts check interval on
+  sustained failure, capped at 5 minutes with ±10% jitter.
+- **Self-healing metrics** — on SQLite corruption, the monitor renames the bad
+  file and recreates the schema; a `critical` alert fires.
+- **Hot config reload** — edit `resilience.conf`, then `monitor.sh reload`.
+  Invalid configs are rejected and the prior config is retained.
+- **History CLI** — `fallback.sh history [--limit N] [--since YYYY-MM-DD]`
+  shows outages with uptime summary.
+
+See [`docs/architecture.md`](docs/architecture.md) for diagrams and
+[`docs/troubleshooting.md`](docs/troubleshooting.md) for the operator runbook.
+
 ## Commands
 
 | Command | What it does |
