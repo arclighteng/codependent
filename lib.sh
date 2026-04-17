@@ -650,7 +650,10 @@ recover_corrupted_db() {
     ts=$(date +%s)
 
     if [[ -f "$db" ]]; then
-        mv "$db" "${db}.corrupted-${ts}" 2>/dev/null || true
+        if ! mv "$db" "${db}.corrupted-${ts}" 2>/dev/null; then
+            echo "recover_corrupted_db: could not rename $db — filesystem may be read-only" >&2
+            return 1
+        fi
     fi
 
     if ! init_metrics_db "$db"; then

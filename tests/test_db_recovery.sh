@@ -27,10 +27,8 @@ test_check_db_integrity_detects_corruption() {
     _setup_corrupt_db "$db"
 
     local result
-    result=$(check_db_integrity "$db")
-    if [[ "$result" == "ok" ]]; then
-        assert_eq "corrupted" "$result" "garbage file must not report ok"
-    fi
+    result=$(check_db_integrity "$db" || true)
+    assert_eq "corrupted" "$result" "garbage file must report corrupted"
 
     rm -f "$db"
 }
