@@ -1,6 +1,8 @@
 # codependent
 
-A tiered failover system for AI coding assistants. When your primary tool goes down, codependent detects the outage and gets you working again on the next available option — automatically.
+**Multi-provider failover for AI coding assistants.**
+
+When your primary tool goes down, codependent detects the outage and gets you working again on the next available option — automatically.
 
 The name is the joke. You're uncomfortably reliant on AI coding tools. This makes that dependency slightly less dangerous.
 
