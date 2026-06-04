@@ -1,7 +1,18 @@
 # RFC: codependent config schema — locking v0.1, surfacing one-way doors
 
-**Status:** Draft for sign-off. Author: Dade (coder agent). Date: 2026-06-03.
+**Status:** Doors closed 2026-06-03. v0.1 schema is the stable contract for SaaS build. Author: Dade (coder agent). Date: 2026-06-03 (updated).
 **Companion artifacts:** `schema/v0.1/SCHEMA.md`, `schema/v0.1/schema.yaml`, `schema/v0.1/validate.py`, two example configs under `schema/v0.1/examples/`.
+
+**Decision summary (from arc, 2026-06-03):**
+
+| # | Door                                       | Resolution                                                                                         |
+|---|--------------------------------------------|----------------------------------------------------------------------------------------------------|
+| 1 | Schema versioning policy                   | **DEFERRED to v0.2.** v0.1 ships with `version: "0.1"` (major-only string); semver vs major-only is a v0.2 decision. |
+| 2 | Validation source of truth                 | **LOCKED.** Server-side Go is canonical. `validate.py` is a developer convenience and must be marked as such in its header. |
+| 3 | Secrets in config                          | **LOCKED.** Never store secrets inline. All secret-bearing fields are vault references.            |
+| 4 | Config cardinality                         | **LOCKED.** Many configs per team allowed. **Hard cap: 4 chain members per config.**               |
+| 5 | `reporter.sh` event payload shape          | **LOCKED in v0.1.** Schema defined inline below.                                                   |
+| 6 | v1.0 promotion criteria                    | **LOCKED.** Bar defined inline below.                                                              |
 
 ## Why this RFC
 
@@ -14,7 +25,7 @@ The config file is the load-bearing primitive. v0.1 exists and validates, but it
 | `version`         | yes      | string, must be `"0.1"` for this validator                       | —                                        |
 | `name`            | yes      | string, human label                                              | —                                        |
 | `fallback_trigger`| yes      | object: `mode` (`any`\|`all`) + `rules[]`                        | `mode: any`                              |
-| `chain`           | yes      | array, ≥2 entries, ordered (index 0 = primary)                   | —                                        |
+| `chain`           | yes      | array, ≥2 and ≤4 entries, ordered (index 0 = primary)            | —                                        |
 | `recovery_trigger`| no       | object: `consecutive_successes`, `window_seconds`, `min_dwell_seconds` | `10 / 300 / 600`                   |
 | `scope`           | no       | object: `model_tiers`, `paths`, `users`, `environments`          | applies to all sessions                  |
 | `notify`          | no       | object: `channels[]`, URLs, `events[]`, `silence_after_seconds`  | `channels: [terminal]`, `events: [on_failover, on_recovery]` |
@@ -92,22 +103,131 @@ scope:
 
 notify:
   channels: [slack]
-  slack_webhook_url: https://hooks.slack.com/services/T00/B00/XXXX
+  slack_webhook_ref: vault://team/acme-eng/slack_webhook   # or env://SLACK_WEBHOOK for local-only
   events: [on_failover, on_recovery]
   silence_after_seconds: 1800
 ```
 
-## One-way doors — arc decides, this RFC does not
+> Note: per Door 3 (Secrets in config), inline webhook URLs are rejected by the validator. Use `vault://team/{team_id}/{name}` for SaaS or `env://VAR_NAME` for local-only.
 
-These shape pricing, GTM, or product surface. Decide before v1.0 is cut.
+## One-way doors — resolved
 
-1. **Schema versioning policy.** Is `version` semver (`"0.1.3"`) or major-only (`"0.1"`)? Pick one and document the deprecation window. Server-side `PUT /api/v1/teams/:id/config` rejection rules depend on this.
-2. **Server-side vs client-side validation source of truth.** Does the Go control-plane API re-implement `validate.py`, or does it shell out / port? If they drift, the SaaS contract breaks. Recommend porting to Go and treating the Python validator as a developer convenience only.
-3. **Secrets in config.** Today `auth_env` names a local env var, so the YAML carries no secrets. Per-team config in the SaaS will tempt webhooks-with-credentials inline (Slack URL is already inline in the example). Lock in: **never store secrets in the team config blob.** Webhook URLs are pre-signed or vaulted; `slack_webhook_url` becomes a reference to a team-vault entry, not a raw URL. This decision shapes the dashboard UX and the GTM compliance pitch.
-4. **One config per team or many.** Web UI assumes one. Some teams will want a dev/prod split. If multi-config is in v1.0, `scope.environments` becomes the selector and the API needs `GET /api/v1/teams/:id/configs`. If not, document "one config per team" as a constraint, not an oversight.
-5. **Agent → control-plane event payload shape.** `reporter.sh` (per SPEC.md) posts state transitions. The payload schema is not in v0.1 — it should be, or it should be explicitly out-of-scope and versioned separately. This decision sets the audit-log shape and the timeline view contract.
-6. **Promotion criteria for v1.0.** What evidence promotes v0.1 → v1.0? (e.g., 3 paying teams running v0.1 unchanged for 30 days, zero schema-breaking field requests.) Without a written bar, v0.1 stays "draft" forever and the SaaS launches on quicksand.
+### 1. Schema versioning policy — DEFERRED to v0.2
 
-## Decision requested
+`version` is a string equal to `"0.1"` for this validator (major-only). Whether v0.2 adopts full semver (`"0.2.3"`) and how deprecation windows are documented is a v0.2 decision, deliberately not resolved here. The server-side validator accepts only the exact string `"0.1"` for the duration of v0.1's life.
 
-Per door above: **lock, defer to v0.2, or kill.** Once signed off, v0.1 is the stable contract; the build (control plane, web UI, `reporter.sh`) unblocks.
+**Open question (v0.2):** semver vs major-only string, deprecation window length, breaking-change policy.
+
+### 2. Validation source of truth — LOCKED: server-side Go is canonical
+
+The Go control-plane API is the single source of truth for config validation. `validate.py` is reclassified as a **developer convenience** for local editing and CI hooks — not a contract.
+
+**Rationale.** The SaaS sells the contract on `PUT /api/v1/teams/:id/config` and `codependent push`. If the Go server says "valid," it must be valid; if Python disagrees, that's a dev-tooling bug to fix in Python, never in Go. The reverse (Python authoritative, Go re-implements) makes every Go release block on Python tests and turns drift into a paying-customer-facing outage. Porting Python → Go once is cheap; the reverse coupling is permanent tax.
+
+**Concrete requirements:**
+
+- The Go validator and `validate.py` MUST share a single test corpus (`schema/v0.1/testdata/`) — fixtures are the contract.
+- Every `validate.py` change MUST land with a Go-side test demonstrating identical behavior, or it is rejected.
+- `validate.py`'s file header MUST carry a banner: `# Developer convenience. The Go control plane is the authoritative validator. See RFC.`
+- CI MUST run both validators against `schema/v0.1/testdata/` on every PR and fail on any divergence.
+
+### 3. Secrets in config — LOCKED: never store inline
+
+The team config blob MUST NOT contain secrets. This is a hard policy, enforced by the server-side validator.
+
+**Affected fields and replacements:**
+
+| Old shape (rejected)                                              | New shape (required)                                                                  |
+|-------------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| `slack_webhook_url: https://hooks.slack.com/services/T00/B00/XXX` | `slack_webhook_ref: vault://team/{team_id}/slack_webhook`                             |
+| `auth_env: ANTHROPIC_API_KEY` (local agent only)                  | unchanged — `auth_env` already references an env var name, not a secret value         |
+| `webhook.url: https://...?token=...`                              | `webhook.url_ref: vault://team/{team_id}/notify_webhook`                              |
+
+**Validator rule.** Any field matching a "looks-like-a-secret" pattern is rejected at validation time:
+
+- Any URL containing `hooks.slack.com/services/T*/B*/*`
+- Any URL with a query parameter named `token`, `key`, `secret`, `password`, `auth`
+- Any literal bearer token shape (`xox[abp]-`, `sk-`, `ghp_`, `gho_`, etc.)
+
+The validator returns a structured error pointing to the vault-ref form.
+
+**Vault reference shape.** `vault://team/{team_id}/{name}` is opaque to the validator; the control plane resolves it at agent-fetch time. Local-only configs (no SaaS) MAY use `env://VAR_NAME` for the same fields — the validator accepts both `vault://` and `env://` schemes.
+
+### 4. Config cardinality — LOCKED: many per team, cap 4 chain members
+
+A team MAY have multiple configs (dev, prod, per-service, etc.). The control-plane API exposes them as:
+
+- `GET /api/v1/teams/:id/configs` — list
+- `GET /api/v1/teams/:id/configs/:config_id` — fetch one
+- `PUT /api/v1/teams/:id/configs/:config_id` — upsert
+- `DELETE /api/v1/teams/:id/configs/:config_id` — remove
+
+The agent fetches a specific config by ID (set via `CODEPENDENT_CONFIG_ID` env or CLI flag); `scope.environments` does NOT act as a multi-config selector — each config is addressed by ID, scope filters what sessions inside that config it applies to.
+
+**Hard cap: `chain.length ≤ 4`.** The failover party maxes at 4 members per config. Enforced server-side in the Go validator and client-side in `validate.py`. Per arc verbatim: "party is capped at 4 people. No more."
+
+**Rationale for cap.** Failover chains beyond 4 imply a planning problem (cost, latency, or vendor strategy), not a resilience problem. The 4th hop is already operating on degraded assumptions; the 5th is theater. Holding the line at 4 also keeps the dashboard's chain visualization tractable.
+
+### 5. `reporter.sh` event payload shape — LOCKED in v0.1
+
+`reporter.sh` posts state transitions to `POST /api/v1/teams/:team_id/configs/:config_id/events`. Payload is JSON, one event per POST, schema below. Adding fields is non-breaking (consumers MUST ignore unknown fields); removing or renaming fields is a v0.2 break.
+
+```json
+{
+  "schema_version": "0.1",
+  "event_id": "uuid-v4",
+  "team_id": "string",
+  "config_id": "string",
+  "agent_id": "string",
+  "occurred_at": "RFC3339 timestamp with milliseconds",
+  "reported_at": "RFC3339 timestamp with milliseconds",
+  "event_type": "failover|recovery|manual_trigger|health_degraded|health_restored",
+  "from_provider": {"id": "primary-claude", "provider": "anthropic", "model": "claude-opus-4-7"},
+  "to_provider":   {"id": "fallback-gemini", "provider": "google", "model": "gemini-2.5-pro"},
+  "trigger": {
+    "rule_kind": "latency_p95_ms|error_rate|status_page|manual",
+    "observed_value": "number or string",
+    "threshold": "number or string",
+    "window_seconds": 60
+  },
+  "session_scope": {
+    "session_id": "string-or-null",
+    "user": "string-or-null",
+    "path": "string-or-null"
+  }
+}
+```
+
+**Required fields:** `schema_version`, `event_id`, `team_id`, `config_id`, `agent_id`, `occurred_at`, `reported_at`, `event_type`, `from_provider`, `to_provider`.
+**Optional fields:** `trigger` (omitted for `manual_trigger`), `session_scope` (omitted when not session-scoped).
+
+**Server contract.** The control plane validates the payload against this schema and rejects with HTTP 400 on schema violation. `event_id` provides idempotency — duplicate `event_id` returns HTTP 200 with no side effect. The audit-log row and timeline-view entity are 1:1 with this payload (no transformation), so this schema also locks the audit-log shape.
+
+### 6. v1.0 promotion criteria — LOCKED
+
+v0.1 → v1.0 promotion requires **all** of the following, evidenced in writing:
+
+1. **3 paying teams** running v0.1 in production for **≥30 consecutive days each**, with no config rewrite required by codependent (teams may edit their own configs; we may not edit theirs to make them work).
+2. **Zero schema-breaking field requests** during the trailing 30-day window. A "breaking request" = a customer-blocking ask that cannot be addressed by an additive v0.1 change. Additive requests (new optional fields, new enum values in open sets) do not count.
+3. **Go validator and `validate.py` parity** demonstrated by green CI on `schema/v0.1/testdata/` for ≥30 consecutive days.
+4. **`reporter.sh` event ingestion** running with <0.1% rejection rate (schema 400s) across all active teams over the trailing 14 days.
+5. **Written sign-off** from arc in `RFC-v1.0-promotion.md` referencing the metrics above with timestamps and team IDs.
+
+If any criterion slips, v0.1 stays draft and the v0.2 RFC supersedes this one.
+
+## What unblocks now
+
+With these doors closed, the SaaS build proceeds against v0.1 as a stable contract:
+
+- Go control-plane API: implement the canonical validator against `schema/v0.1/schema.yaml` + `testdata/`.
+- Web UI editor: build against the locked field list, with the chain-length cap (4) enforced in the form.
+- `reporter.sh`: implement payload per §5; control-plane ingest endpoint and audit-log writer mirror the schema 1:1.
+- Vault layer: implement `vault://team/{team_id}/{name}` resolution at agent-fetch time; `env://VAR_NAME` accepted as fallback for local-only deployments.
+- Billing copy: "up to 4 providers in a failover chain, multiple configs per team."
+
+## Open for v0.2 (do not address here)
+
+- Schema versioning policy (semver vs major-only, deprecation window).
+- Adding `chain` members beyond 4 (will require arc revisit of the cap rationale).
+- New provider kinds, new rule kinds, new notify channels.
+- Multi-region replication of the events stream.
